@@ -4,8 +4,20 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { ProcessedEvent } from "@/components/ActivityTimeline";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
+import { Navigation } from "@/components/Navigation";
+import { SEODashboard } from "@/components/SEODashboard";
+import { ContentGenerator } from "@/components/ContentGenerator";
+import { APIKeyManager } from "@/components/APIKeyManager";
+import { MainLayout } from "@/components/MainLayout";
+import "@/styles/globals.css";
+
+type ActiveView = 'research' | 'seo' | 'content' | 'api-keys';
 
 export default function App() {
+  // Check if user wants the new UI
+  const [useNewUI, setUseNewUI] = useState(true);
+  
+  const [activeView, setActiveView] = useState<ActiveView>('research');
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
     ProcessedEvent[]
   >([]);
@@ -152,32 +164,60 @@ export default function App() {
     window.location.reload();
   }, [thread]);
 
+  const renderActiveView = () => {
+    switch (activeView) {
+      case 'research':
+        return (
+          <div className={`flex-1 overflow-y-auto ${
+            thread.messages.length === 0 ? "flex" : ""
+          }`}>
+            {thread.messages.length === 0 ? (
+              <WelcomeScreen
+                handleSubmit={handleSubmit}
+                isLoading={thread.isLoading}
+                onCancel={handleCancel}
+              />
+            ) : (
+              <ChatMessagesView
+                messages={thread.messages}
+                isLoading={thread.isLoading}
+                scrollAreaRef={scrollAreaRef}
+                onSubmit={handleSubmit}
+                onCancel={handleCancel}
+                liveActivityEvents={processedEventsTimeline}
+                historicalActivities={historicalActivities}
+              />
+            )}
+          </div>
+        );
+      case 'seo':
+        return <SEODashboard />;
+      case 'content':
+        return <ContentGenerator />;
+      case 'api-keys':
+        return <APIKeyManager />;
+      default:
+        return null;
+    }
+  };
+
+  // New UI with toggle capability
+  if (useNewUI) {
+    return (
+      <div className="dark">
+        <MainLayout>
+          {renderActiveView()}
+        </MainLayout>
+      </div>
+    );
+  }
+
+  // Original UI
   return (
     <div className="flex h-screen bg-neutral-800 text-neutral-100 font-sans antialiased">
-      <main className="flex-1 flex flex-col overflow-hidden max-w-4xl mx-auto w-full">
-        <div
-          className={`flex-1 overflow-y-auto ${
-            thread.messages.length === 0 ? "flex" : ""
-          }`}
-        >
-          {thread.messages.length === 0 ? (
-            <WelcomeScreen
-              handleSubmit={handleSubmit}
-              isLoading={thread.isLoading}
-              onCancel={handleCancel}
-            />
-          ) : (
-            <ChatMessagesView
-              messages={thread.messages}
-              isLoading={thread.isLoading}
-              scrollAreaRef={scrollAreaRef}
-              onSubmit={handleSubmit}
-              onCancel={handleCancel}
-              liveActivityEvents={processedEventsTimeline}
-              historicalActivities={historicalActivities}
-            />
-          )}
-        </div>
+      <Navigation activeView={activeView} onViewChange={setActiveView} />
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {renderActiveView()}
       </main>
     </div>
   );

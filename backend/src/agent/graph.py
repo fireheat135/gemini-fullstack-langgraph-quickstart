@@ -7,7 +7,7 @@ from langgraph.types import Send
 from langgraph.graph import StateGraph
 from langgraph.graph import START, END
 from langchain_core.runnables import RunnableConfig
-from google.genai import Client
+# from google.genai import Client  # Not needed for current functionality
 
 from agent.state import (
     OverallState,
@@ -36,8 +36,8 @@ load_dotenv()
 if os.getenv("GEMINI_API_KEY") is None:
     raise ValueError("GEMINI_API_KEY is not set")
 
-# Used for Google Search API
-genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Used for Google Search API - commented out as not needed for basic testing
+# genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # Nodes

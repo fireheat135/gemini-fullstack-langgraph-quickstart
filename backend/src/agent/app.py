@@ -4,8 +4,20 @@ from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 import fastapi.exceptions
 
+from agent.graph import graph as research_graph
+from agent.seo_graph import (
+    create_seo_research_graph,
+    create_seo_content_graph, 
+    create_seo_analysis_graph
+)
+
 # Define the FastAPI app
-app = FastAPI()
+app = FastAPI(title="SEO Agent Platform", version="1.0.0")
+
+# Create SEO workflow graphs
+seo_research_graph = create_seo_research_graph()
+seo_content_graph = create_seo_content_graph()
+seo_analysis_graph = create_seo_analysis_graph()
 
 
 def create_frontend_router(build_dir="../frontend/dist"):
