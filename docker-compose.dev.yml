@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database for development
+  seo-postgres:
+    image: postgres:15-alpine
+    container_name: seo-agent-dev-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: seo_agent_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+    volumes:
+      - seo_postgres_data:/var/lib/postgresql/data
+      - ./backend/database/schema:/docker-entrypoint-initdb.d
+    ports:
+      - "5434:5432"  # Different port to avoid conflicts with LangGraph
+    networks:
+      - seo-agent-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev_user -d seo_agent_dev"]
+      interval: 5s
+      timeout: 1s
+      retries: 5
+
+  # Redis for SEO Agent
+  seo-redis:
+    image: redis:7-alpine
+    container_name: seo-agent-dev-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    volumes:
+      - seo_redis_data:/data
+    networks:
+      - seo-agent-dev-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 1s
+      retries: 5
+
+  # SEO Agent Backend
+  seo-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: seo-agent-dev-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgresql://dev_user:dev_password@seo-postgres:5432/seo_agent_dev"
+      REDIS_URL: "redis://seo-redis:6379/0"
+      DEBUG: "true"
+      ENVIRONMENT: "development"
+      SECRET_KEY: "dev-secret-key-not-secure"
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_SEARCH_API_KEY: ${GOOGLE_SEARCH_API_KEY}
+      GOOGLE_SEARCH_ENGINE_ID: ${GOOGLE_SEARCH_ENGINE_ID}
+      BACKEND_CORS_ORIGINS: "http://localhost:5173,http://localhost:3000"
+    ports:
+      - "8001:8000"  # Different port for SEO backend
+    volumes:
+      - ./backend:/app
+      - ./backend/uploads:/app/uploads
+    networks:
+      - seo-agent-dev-network
+    depends_on:
+      seo-postgres:
+        condition: service_healthy
+      seo-redis:
+        condition: service_healthy
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  # Keep existing LangGraph services
+  langgraph-redis:
+    image: docker.io/redis:6
+    networks:
+      - seo-agent-dev-network
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 1s
+      retries: 5
+
+  langgraph-postgres:
+    image: docker.io/postgres:16
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - langgraph-data:/var/lib/postgresql/data
+    networks:
+      - seo-agent-dev-network
+    healthcheck:
+      test: pg_isready -U postgres
+      start_period: 10s
+      timeout: 1s
+      retries: 5
+      interval: 5s
+
+  langgraph-api:
+    image: gemini-fullstack-langgraph
+    ports:
+      - "8123:8000"
+    depends_on:
+      langgraph-redis:
+        condition: service_healthy
+      langgraph-postgres:
+        condition: service_healthy
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      REDIS_URI: redis://langgraph-redis:6379
+      POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable
+    networks:
+      - seo-agent-dev-network
+
+volumes:
+  langgraph-data:
+    driver: local
+  seo_postgres_data:
+    driver: local
+  seo_redis_data:
+    driver: local
+
+networks:
+  seo-agent-dev-network:
+    driver: bridge

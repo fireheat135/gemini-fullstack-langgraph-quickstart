@@ -60,62 +60,57 @@ export function ContentGenerator() {
 
     setIsGenerating(true);
     try {
-      // TODO: Integrate with content generation API
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Backend API integration for content generation
+      const response = await apiClient.generateContent({
+        selected_pattern: {
+          type: request.contentType,
+          target_audience: request.targetAudience,
+          target_word_count: request.targetLength,
+          tone_manner: {
+            voice: request.tone,
+            personality: '専門家',
+            style: 'ていねい語'
+          }
+        },
+        article_outline: {
+          title: `${request.topic}の完全ガイド`,
+          headings: [
+            { level: 'H1', text: `${request.topic}の完全ガイド`, keywords: request.keywords },
+            { level: 'H2', text: 'はじめに', keywords: request.keywords.slice(0, 2) },
+            { level: 'H2', text: `${request.topic}とは`, keywords: request.keywords.slice(1, 3) },
+            { level: 'H3', text: '主要なポイント', keywords: request.keywords.slice(0, 1) },
+            { level: 'H2', text: '実装方法', keywords: request.keywords.slice(2, 4) },
+            { level: 'H3', text: 'ステップ1: 準備段階', keywords: request.keywords.slice(0, 2) },
+            { level: 'H3', text: 'ステップ2: 実行段階', keywords: request.keywords.slice(1, 3) },
+            { level: 'H3', text: 'ステップ3: 最適化', keywords: request.keywords.slice(2, 4) },
+            { level: 'H2', text: 'まとめ', keywords: request.keywords }
+          ]
+        },
+        research_data: {
+          related_keywords: request.keywords,
+          target_keyword: request.topic
+        }
+      });
 
-      // Mock generated content
-      const mockContent: GeneratedContent = {
-        title: `${request.topic}の完全ガイド - 2024年最新版`,
-        metaDescription: `${request.topic}について知っておくべきすべてを解説。${request.keywords.slice(0, 2).join('、')}などの重要ポイントを詳しく説明します。`,
-        content: `# ${request.topic}の完全ガイド
-
-## はじめに
-
-${request.topic}は現代において非常に重要なトピックです。この記事では、${request.keywords.join('、')}について詳しく解説し、実践的な知識を提供します。
-
-## ${request.topic}とは
-
-${request.topic}は...（ここに詳細な説明が続きます）
-
-### 主要なポイント
-
-1. **基本概念の理解**
-   - ${request.keywords[0] || 'キーワード'}の重要性
-   - 基礎となる知識の習得
-
-2. **実践的なアプローチ**
-   - 具体的な手順
-   - ベストプラクティス
-
-3. **応用と展開**
-   - 発展的な活用方法
-   - 将来的な展望
-
-## 実装方法
-
-### ステップ1: 準備段階
-（詳細な手順）
-
-### ステップ2: 実行段階
-（具体的な実装方法）
-
-### ステップ3: 最適化
-（改善のポイント）
-
-## まとめ
-
-${request.topic}について理解を深めることで、より効果的な成果を得ることができます。${request.keywords.join('、')}を活用して、継続的な改善を図りましょう。`,
-        seoScore: 87,
-        readabilityScore: 72,
-        suggestions: [
+      const apiResult = response.data;
+      
+      // Parse API response to match our component structure
+      const generatedContent: GeneratedContent = {
+        title: apiResult.article_content?.title || `${request.topic}の完全ガイド`,
+        metaDescription: apiResult.article_content?.meta_description || `${request.topic}について詳しく解説`,
+        content: apiResult.article_content?.full_content || apiResult.article_content?.sections?.map((section: any) => 
+          `## ${section.heading}\n\n${section.content}`
+        ).join('\n\n') || 'コンテンツ生成中にエラーが発生しました',
+        seoScore: apiResult.seo_analysis?.structure_score || 75,
+        readabilityScore: apiResult.seo_analysis?.readability_score || 70,
+        suggestions: apiResult.improvement_suggestions || [
           'H2見出しにターゲットキーワードを追加してください',
           'メタディスクリプションを150文字以内に調整してください',
-          '内部リンクを3-5個追加することをお勧めします',
-          '画像のalt属性にキーワードを含めてください'
+          '内部リンクを3-5個追加することをお勧めします'
         ]
       };
 
-      setGeneratedContent(mockContent);
+      setGeneratedContent(generatedContent);
       setActiveTab('preview');
     } catch (error) {
       console.error('Error generating content:', error);

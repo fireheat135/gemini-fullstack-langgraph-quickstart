@@ -1,288 +1,281 @@
 """
-Test for Content Management System
-コンテンツ管理システムのテスト
-TDD Red Phase: テスト作成
+Test Suite for Content Management System
+過去記事管理・重複検出システムのテスト
+
+Test Coverage:
+1. 過去記事のコンテンツ・トンマナ保存機能
+2. 記事間重複コンテンツ検出
+3. 類似度判定アルゴリズム
+4. 重複アラート機能
 """
+
 import pytest
-from unittest.mock import Mock, patch
-from typing import Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
+import asyncio
 
-
-@pytest.fixture
-def sample_article_content():
-    """サンプル記事コンテンツ"""
-    return {
-        "id": "article_001",
-        "title": "3月の誕生花チューリップの花言葉と魅力",
-        "content": """
-        3月の誕生花であるチューリップは、春の訪れを告げる美しい花として親しまれています。
-        その鮮やかな色彩と優雅な形状で、多くの人々に愛され続けています。
-        チューリップの花言葉は「思いやり」「美しい眼差し」「正直」などがあります。
-        """,
-        "primary_keyword": "3月 誕生花",
-        "secondary_keywords": ["チューリップ", "花言葉"],
-        "created_at": datetime.now(),
-        "user_id": "user_001",
-        "tone_manner_profile": {
-            "writing_style": "親しみやすく丁寧",
-            "target_audience": "一般読者",
-            "brand_voice": "専門的だが分かりやすい"
-        }
-    }
-
-
-@pytest.fixture
-def duplicate_article_content():
-    """重複検出用のサンプル記事コンテンツ"""
-    return {
-        "id": "article_002",
-        "title": "3月の誕生花チューリップについて詳しく解説",
-        "content": """
-        3月の誕生花チューリップは、春を代表する美しい花です。
-        その鮮やかな色合いと上品な形で、多くの人に愛されています。
-        チューリップの花言葉には「思いやり」「美しい眼差し」などがあります。
-        """,
-        "primary_keyword": "3月 誕生花",
-        "secondary_keywords": ["チューリップ", "花言葉"],
-        "created_at": datetime.now(),
-        "user_id": "user_001"
-    }
+from src.content.content_management_system import (
+    ContentManagementSystem,
+    ArticleContent,
+    DuplicateDetectionResult,
+    SimilarityAnalysis,
+    ContentAlert,
+    ToneManner,
+    AlertType,
+    SimilarityThreshold
+)
 
 
 class TestContentManagementSystem:
-    """コンテンツ管理システムのテストクラス"""
-
-    def test_save_article_content_記事保存機能(self, sample_article_content):
-        """記事コンテンツの保存機能をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        result = cms.save_article(sample_article_content)
-        
-        assert result is not None
-        assert result["status"] == "saved"
-        assert result["article_id"] == sample_article_content["id"]
-        assert "fingerprint" in result
-        assert "tone_profile" in result
-
-    def test_content_fingerprinting_コンテンツフィンガープリンティング(self, sample_article_content):
-        """コンテンツのフィンガープリンティング機能をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        fingerprint = cms.generate_content_fingerprint(sample_article_content["content"])
-        
-        assert fingerprint is not None
-        assert isinstance(fingerprint, str)
-        assert len(fingerprint) > 0
-        
-        # 同じコンテンツは同じフィンガープリントを生成
-        fingerprint2 = cms.generate_content_fingerprint(sample_article_content["content"])
-        assert fingerprint == fingerprint2
-
-    def test_duplicate_detection_重複検出機能(self, sample_article_content, duplicate_article_content):
-        """重複コンテンツ検出機能をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        # 最初の記事を保存
-        cms.save_article(sample_article_content)
-        
-        # 重複検出を実行
-        duplicate_result = cms.detect_duplicates(duplicate_article_content)
-        
-        assert duplicate_result is not None
-        assert "is_duplicate" in duplicate_result
-        assert "similarity_score" in duplicate_result
-        assert duplicate_result["similarity_score"] > 0.4  # 40%以上の類似度（実用的な閾値）
-        assert duplicate_result["is_duplicate"] is True
-
-    def test_similarity_scoring_類似度計算(self, sample_article_content, duplicate_article_content):
-        """コンテンツ類似度スコア計算をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        content1 = sample_article_content["content"]
-        content2 = duplicate_article_content["content"]
-        
-        similarity_score = cms.calculate_similarity(content1, content2)
-        
-        assert 0.0 <= similarity_score <= 1.0
-        assert similarity_score > 0.4  # 適度な類似度を期待
-
-    def test_cosine_similarity_コサイン類似度(self):
-        """コサイン類似度アルゴリズムをテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        # 同じテキスト
-        text1 = "これはテストのための文章です"
-        text2 = "これはテストのための文章です"
-        
-        similarity = cms.calculate_cosine_similarity(text1, text2)
-        assert similarity == 1.0  # 完全一致
-        
-        # 異なるテキスト
-        text3 = "まったく異なる内容の文章を作成しました"
-        similarity2 = cms.calculate_cosine_similarity(text1, text3)
-        assert 0.0 <= similarity2 < 1.0
-
-    def test_duplicate_alert_system_重複アラート(self, sample_article_content, duplicate_article_content):
-        """重複アラートシステムをテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        # 閾値設定（現実的な値に調整）
-        cms.set_duplicate_threshold(0.3)
-        
-        # 最初の記事を保存
-        cms.save_article(sample_article_content)
-        
-        # 重複アラートをチェック
-        alert_result = cms.check_duplicate_alert(duplicate_article_content)
-        
-        assert alert_result is not None
-        assert "alert_triggered" in alert_result
-        assert "threshold_exceeded" in alert_result
-        assert "similar_articles" in alert_result
-        assert alert_result["alert_triggered"] is True
-
-    def test_content_versioning_バージョン管理(self, sample_article_content):
-        """コンテンツのバージョン管理をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        # 初回保存
-        result1 = cms.save_article(sample_article_content)
-        
-        # 同じIDで更新
-        updated_content = sample_article_content.copy()
-        updated_content["content"] = "更新されたコンテンツです。新しい情報を追加しました。"
-        
-        result2 = cms.save_article(updated_content)
-        
-        assert result1["version"] == 1
-        assert result2["version"] == 2
-        
-        # バージョン履歴を取得
-        versions = cms.get_article_versions(sample_article_content["id"])
-        assert len(versions) == 2
-
-    def test_tone_manner_preservation_トンマナ保存(self, sample_article_content):
-        """トーン&マナー情報の保存をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        result = cms.save_article(sample_article_content)
-        
-        # トーン&マナー情報が保存されていることを確認
-        assert "tone_profile" in result
-        stored_article = cms.get_article(sample_article_content["id"])
-        assert stored_article["tone_manner_profile"] == sample_article_content["tone_manner_profile"]
-
-    def test_search_similar_articles_類似記事検索(self, sample_article_content):
-        """類似記事検索機能をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        # 複数記事を保存
-        cms.save_article(sample_article_content)
-        
-        # 検索クエリ
-        search_query = "チューリップ 花言葉"
-        
-        similar_articles = cms.search_similar_articles(search_query, threshold=0.5)
-        
-        assert isinstance(similar_articles, list)
-        assert len(similar_articles) > 0
-        assert all("similarity_score" in article for article in similar_articles)
-
-    def test_content_cleanup_コンテンツクリーンアップ(self, sample_article_content):
-        """コンテンツのクリーンアップ機能をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        raw_content = """
-        
-        これは  不要な   スペースや
-
-        改行が    含まれた  コンテンツです。
-        
-        
-        """
-        
-        cleaned_content = cms.clean_content(raw_content)
-        
-        # 余分な空白や改行が除去されていることを確認
-        assert "これは不要なスペースや" in cleaned_content
-        assert "  " not in cleaned_content  # 連続スペースが除去されている
-        assert not cleaned_content.startswith("\n")  # 先頭の改行が除去されている
-
-    def test_batch_duplicate_check_一括重複チェック(self, sample_article_content):
-        """一括重複チェック機能をテスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        
-        cms = ContentManagementSystem()
-        
-        # 複数記事をリストで準備
-        articles = [
-            sample_article_content,
-            {
-                "id": "article_002",
-                "content": "全く異なる内容の記事です。重複しないはずです。",
-                "title": "異なる記事"
-            },
-            {
-                "id": "article_003", 
-                "content": sample_article_content["content"],  # 重複コンテンツ
-                "title": "重複記事"
-            }
+    
+    @pytest.fixture
+    def cms(self):
+        """Content Management System instance for testing"""
+        return ContentManagementSystem()
+    
+    @pytest.fixture
+    def sample_articles(self) -> List[ArticleContent]:
+        """テスト用の記事データ"""
+        return [
+            ArticleContent(
+                id="article_1",
+                title="1月の誕生花「カーネーション」の花言葉と育て方",
+                content="カーネーションは1月を代表する美しい花です。花言葉は「母への愛」「感謝」を表しています。",
+                keyword="1月 誕生花 カーネーション",
+                tone_manner=ToneManner(
+                    tone="親しみやすい",
+                    formality="カジュアル",
+                    target_audience="花好きの女性",
+                    writing_style="情報提供型"
+                ),
+                created_at=datetime.now() - timedelta(days=30),
+                meta_description="1月の誕生花カーネーションの花言葉と育て方を詳しく解説",
+                tags=["誕生花", "1月", "カーネーション", "花言葉"]
+            ),
+            ArticleContent(
+                id="article_2", 
+                title="2月の誕生花「プリムラ」の特徴と花言葉",
+                content="プリムラは2月の代表的な誕生花として親しまれています。可憐な花びらと豊富な色彩が魅力的です。",
+                keyword="2月 誕生花 プリムラ",
+                tone_manner=ToneManner(
+                    tone="親しみやすい",
+                    formality="カジュアル", 
+                    target_audience="花好きの女性",
+                    writing_style="情報提供型"
+                ),
+                created_at=datetime.now() - timedelta(days=20),
+                meta_description="2月の誕生花プリムラの特徴と美しい花言葉について",
+                tags=["誕生花", "2月", "プリムラ", "花言葉"]
+            ),
+            ArticleContent(
+                id="article_3",
+                title="カーネーションの育て方完全ガイド",
+                content="カーネーションは比較的育てやすい花として知られています。適切な水やりと日光管理が重要なポイントです。",
+                keyword="カーネーション 育て方",
+                tone_manner=ToneManner(
+                    tone="親しみやすい",
+                    formality="カジュアル",
+                    target_audience="ガーデニング初心者", 
+                    writing_style="問題解決型"
+                ),
+                created_at=datetime.now() - timedelta(days=10),
+                meta_description="カーネーションの育て方を初心者向けに詳しく解説",
+                tags=["カーネーション", "育て方", "ガーデニング"]
+            )
         ]
-        
-        duplicate_report = cms.batch_duplicate_check(articles)
-        
-        assert "total_articles" in duplicate_report
-        assert "duplicate_pairs" in duplicate_report
-        assert duplicate_report["total_articles"] == 3
-        assert len(duplicate_report["duplicate_pairs"]) > 0
 
-    def test_validation_and_error_handling_バリデーション(self):
-        """入力バリデーションとエラーハンドリング"""
-        from src.content.content_management_system import ContentManagementSystem
+    # ===== 記事保存・管理機能のテスト =====
+    
+    def test_store_article_content(self, cms, sample_articles):
+        """記事コンテンツの保存テスト"""
+        article = sample_articles[0]
         
-        cms = ContentManagementSystem()
+        result = cms.store_article(article)
         
-        # 空のコンテンツに対するエラーハンドリング
-        with pytest.raises(ValueError, match="Content is required"):
-            cms.save_article({"id": "test", "content": ""})
+        assert result.success == True
+        assert result.article_id == "article_1"
+        assert "記事が正常に保存されました" in result.message
+    
+    def test_retrieve_article_by_id(self, cms, sample_articles):
+        """記事IDによる取得テスト"""
+        article = sample_articles[0]
+        cms.store_article(article)
         
-        # 不正な記事IDに対するエラーハンドリング
-        with pytest.raises(ValueError, match="Article ID is required"):
-            cms.save_article({"content": "test content"})
+        retrieved = cms.get_article_by_id("article_1")
+        
+        assert retrieved is not None
+        assert retrieved.id == "article_1"
+        assert retrieved.title == article.title
+        assert retrieved.content == article.content
+    
+    def test_retrieve_articles_by_keyword(self, cms, sample_articles):
+        """キーワードによる記事検索テスト"""
+        for article in sample_articles:
+            cms.store_article(article)
+        
+        results = cms.get_articles_by_keyword("カーネーション")
+        
+        assert len(results) == 2  # article_1 and article_3
+        assert all("カーネーション" in article.keyword for article in results)
+    
+    def test_retrieve_articles_by_date_range(self, cms, sample_articles):
+        """日付範囲による記事検索テスト"""
+        for article in sample_articles:
+            cms.store_article(article)
+        
+        start_date = datetime.now() - timedelta(days=25)
+        end_date = datetime.now() - timedelta(days=5)
+        
+        results = cms.get_articles_by_date_range(start_date, end_date)
+        
+        assert len(results) >= 1
+        assert all(start_date <= article.created_at <= end_date for article in results)
 
-    def test_performance_benchmarks_パフォーマンス(self, sample_article_content):
-        """パフォーマンステスト"""
-        from src.content.content_management_system import ContentManagementSystem
-        import time
+    # ===== 重複検出機能のテスト =====
+    
+    def test_detect_exact_duplicate_content(self, cms, sample_articles):
+        """完全重複コンテンツの検出テスト"""
+        article1 = sample_articles[0]
+        article2 = ArticleContent(
+            id="duplicate_article",
+            title="違うタイトル",
+            content=article1.content,  # 同じコンテンツ
+            keyword="別のキーワード",
+            tone_manner=article1.tone_manner,
+            created_at=datetime.now()
+        )
         
-        cms = ContentManagementSystem()
+        cms.store_article(article1)
         
-        # 類似度計算のパフォーマンステスト
-        large_content = "これはパフォーマンステスト用の長いコンテンツです。" * 1000
+        result = cms.detect_duplicates(article2)
         
-        start_time = time.time()
-        fingerprint = cms.generate_content_fingerprint(large_content)
-        end_time = time.time()
+        assert result.has_duplicates == True
+        assert len(result.exact_matches) == 1
+        assert result.exact_matches[0].article_id == "article_1"
+        assert result.exact_matches[0].similarity_score == 1.0
+    
+    def test_detect_partial_duplicate_content(self, cms, sample_articles):
+        """部分重複コンテンツの検出テスト"""
+        article1 = sample_articles[0]
+        article2 = ArticleContent(
+            id="partial_duplicate",
+            title="部分的に似た記事",
+            content="カーネーションは1月を代表する花です。美しい花言葉を持っています。",  # 部分的に類似
+            keyword="カーネーション 花言葉",
+            tone_manner=article1.tone_manner,
+            created_at=datetime.now()
+        )
         
-        execution_time = end_time - start_time
-        assert execution_time < 5.0, f"Fingerprint generation took {execution_time} seconds, should be under 5 seconds"
-        assert fingerprint is not None
+        cms.store_article(article1)
+        
+        result = cms.detect_duplicates(article2)
+        
+        assert result.has_duplicates == True
+        assert len(result.partial_matches) >= 1
+        similarity_score = result.partial_matches[0].similarity_score
+        assert 0.3 <= similarity_score < 1.0  # 部分的類似のスコア範囲
+
+    def test_detect_similar_tone_manner(self, cms, sample_articles):
+        """トンマナ類似性の検出テスト"""
+        for article in sample_articles[:2]:  # 同じトンマナの記事を保存
+            cms.store_article(article)
+        
+        new_article = ArticleContent(
+            id="similar_tone",
+            title="新しい記事",
+            content="全く違うコンテンツですが、同じトンマナです。",
+            keyword="新しいキーワード",
+            tone_manner=sample_articles[0].tone_manner,  # 同じトンマナ
+            created_at=datetime.now()
+        )
+        
+        result = cms.detect_duplicates(new_article)
+        
+        assert len(result.tone_manner_matches) >= 2
+
+    # ===== 類似度判定アルゴリズムのテスト =====
+    
+    def test_cosine_similarity_calculation(self, cms):
+        """コサイン類似度計算のテスト"""
+        text1 = "カーネーションは美しい花です"
+        text2 = "カーネーションは美しい花として知られています"
+        text3 = "プリムラは可憐な花です"
+        
+        similarity_12 = cms.calculate_cosine_similarity(text1, text2)
+        similarity_13 = cms.calculate_cosine_similarity(text1, text3)
+        
+        assert similarity_12 > similarity_13  # より類似したテキストの方が高いスコア
+        assert 0 <= similarity_12 <= 1
+        assert 0 <= similarity_13 <= 1
+    
+    def test_jaccard_similarity_calculation(self, cms):
+        """Jaccard類似度計算のテスト"""
+        text1 = "カーネーション 花言葉 美しい"
+        text2 = "カーネーション 花言葉 育て方"
+        text3 = "プリムラ 特徴 色彩"
+        
+        similarity_12 = cms.calculate_jaccard_similarity(text1, text2)
+        similarity_13 = cms.calculate_jaccard_similarity(text1, text3)
+        
+        assert similarity_12 > similarity_13
+        assert 0 <= similarity_12 <= 1
+        assert 0 <= similarity_13 <= 1
+    
+    def test_semantic_similarity_analysis(self, cms):
+        """意味的類似度分析のテスト"""
+        analysis = cms.analyze_semantic_similarity(
+            "1月の誕生花はカーネーションです",
+            "カーネーションは1月を代表する花です"
+        )
+        
+        assert isinstance(analysis, SimilarityAnalysis)
+        assert 0 <= analysis.cosine_score <= 1
+        assert 0 <= analysis.jaccard_score <= 1
+        assert 0 <= analysis.semantic_score <= 1
+        assert analysis.overall_score > 0.5  # 意味的に類似
+    
+    def test_tone_manner_similarity(self, cms, sample_articles):
+        """トンマナ類似度計算のテスト"""
+        tone1 = sample_articles[0].tone_manner
+        tone2 = sample_articles[1].tone_manner  # 同じトンマナ
+        tone3 = ToneManner(
+            tone="フォーマル",
+            formality="丁寧",
+            target_audience="ビジネスマン",
+            writing_style="比較検討型"
+        )
+        
+        similarity_12 = cms.calculate_tone_manner_similarity(tone1, tone2)
+        similarity_13 = cms.calculate_tone_manner_similarity(tone1, tone3)
+        
+        assert similarity_12 > similarity_13
+        assert similarity_12 == 1.0  # 完全に同じトンマナ
+
+    # ===== アラート機能のテスト =====
+    
+    def test_generate_duplicate_alert(self, cms, sample_articles):
+        """重複アラート生成のテスト"""
+        article1 = sample_articles[0]
+        cms.store_article(article1)
+        
+        duplicate_article = ArticleContent(
+            id="duplicate_test",
+            title="重複テスト記事",
+            content=article1.content,  # 同じコンテンツ
+            keyword="重複テストキーワード",
+            tone_manner=article1.tone_manner,
+            created_at=datetime.now()
+        )
+        
+        alerts = cms.generate_content_alerts(duplicate_article)
+        
+        assert len(alerts) >= 1
+        duplicate_alert = next((a for a in alerts if a.alert_type == AlertType.EXACT_DUPLICATE), None)
+        assert duplicate_alert is not None
+        assert duplicate_alert.severity == "HIGH"
+        assert "完全重複" in duplicate_alert.message
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
+EOF < /dev/null

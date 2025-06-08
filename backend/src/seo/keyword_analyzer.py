@@ -17,8 +17,9 @@ from bs4 import BeautifulSoup
 class KeywordAnalyzer:
     """キーワード分析クラス"""
     
-    def __init__(self):
+    def __init__(self, ai_service_manager=None):
         self.session = None
+        self.ai_service_manager = ai_service_manager
         # 誕生花の月別データ
         self.birth_flowers_by_month = {
             1: ["スイートピー", "カーネーション"],
@@ -711,3 +712,92 @@ class KeywordAnalyzer:
             "cluster_sizes": {intent: len(keywords) for intent, keywords in clusters.items()},
             "total_keywords": len(keywords)
         }
+    
+    # API用の新しいメソッド
+    async def analyze_keyword(self, keyword: str, include_trends: bool = True, 
+                            include_related: bool = True, include_competitors: bool = False) -> Dict[str, Any]:
+        """単一キーワードの総合分析"""
+        result = {
+            "keyword": keyword,
+            "search_volume": 0,
+            "difficulty": 0,
+            "trend": "stable"
+        }
+        
+        # 検索ボリューム取得
+        volume_data = await self.get_search_volume(keyword)
+        result["search_volume"] = volume_data.get("monthly_searches", 0)
+        
+        # 難易度計算
+        difficulty_data = await self.analyze_difficulty([keyword])
+        result["difficulty"] = difficulty_data.get(keyword, 50)
+        
+        # トレンド分析
+        if include_trends:
+            trends_data = await self.get_google_trends_data(keyword)
+            if trends_data.get("seasonality_detected"):
+                result["trend"] = "seasonal"
+            else:
+                # 簡易的なトレンド判定
+                result["trend"] = "stable"
+        
+        # 関連キーワード
+        if include_related:
+            related = await self.get_related_keywords(keyword)
+            result["related_keywords"] = related[:10]  # 上位10個
+        
+        return result
+    
+    async def suggest_keywords(self, seed_keyword: str, target_audience: str, 
+                             content_type: str, count: int = 10) -> List[Dict[str, Any]]:
+        """AI支援によるキーワード提案"""
+        suggestions = []
+        
+        # 基本的な提案を生成
+        base_suggestions = await self.generate_long_tail_keywords(seed_keyword)
+        
+        for i, keyword in enumerate(base_suggestions["long_tail_keywords"][:count]):
+            suggestions.append({
+                "keyword": keyword,
+                "relevance_score": max(0.5, 1.0 - (i * 0.05)),  # 順位に基づくスコア
+                "reasoning": f"{target_audience}向けの{content_type}に適したキーワード"
+            })
+        
+        return suggestions
+    
+    async def get_search_volume_history(self, keyword: str) -> List[Dict[str, Any]]:
+        """検索ボリューム履歴を取得"""
+        volume_data = await self.get_search_volume(keyword)
+        trend_data = volume_data.get("trend_data", [])
+        
+        history = []
+        current_year = datetime.now().year
+        
+        for month_data in trend_data:
+            month = month_data["month"]
+            history.append({
+                "month": f"{current_year}-{month:02d}",
+                "search_volume": month_data["searches"],
+                "year_over_year_change": 0  # 実装では前年同月比を計算
+            })
+        
+        return history
+    
+    async def calculate_difficulty(self, keyword: str, include_breakdown: bool = False) -> Dict[str, Any]:
+        """詳細な難易度計算"""
+        enhanced_data = await self.calculate_keyword_difficulty_enhanced(keyword)
+        
+        result = {
+            "keyword": keyword,
+            "difficulty_score": enhanced_data.get("difficulty_score", 50)
+        }
+        
+        if include_breakdown:
+            result["breakdown"] = {
+                "domain_authority_avg": enhanced_data.get("competition_analysis", {}).get("domain_authority_avg", 0),
+                "backlinks_avg": 1000,  # 実装では実際のデータを使用
+                "content_quality_avg": enhanced_data.get("competition_analysis", {}).get("content_quality_score", 0),
+                "serp_features": ["featured_snippet", "people_also_ask"]  # 実装では実際のSERP機能を分析
+            }
+        
+        return result

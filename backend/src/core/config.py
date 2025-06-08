@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "SEO Agent Platform"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = Field(default=False, description="Debug mode")
+    AUTH_BYPASS: bool = Field(default=False, description="Bypass authentication (development only)")
     
     # Server
     HOST: str = Field(default="0.0.0.0", description="Server host")
@@ -21,7 +22,7 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str = Field(
-        default="postgresql://user:password@localhost/seo_agent",
+        default="sqlite:///./app.db",
         description="Database connection URL"
     )
     DATABASE_ECHO: bool = Field(default=False, description="Log SQL queries")
@@ -45,6 +46,10 @@ class Settings(BaseSettings):
         default=7,
         description="Refresh token expiration time in days"
     )
+    ALGORITHM: str = Field(
+        default="HS256",
+        description="JWT algorithm"
+    )
     
     # Encryption key for API keys
     ENCRYPTION_KEY: str = Field(
@@ -53,7 +58,7 @@ class Settings(BaseSettings):
     )
     
     # AI Service API Keys
-    GOOGLE_GEMINI_API_KEY: Optional[str] = Field(
+    GEMINI_API_KEY: Optional[str] = Field(
         default=None,
         description="Google Gemini API key"
     )
@@ -64,6 +69,16 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = Field(
         default=None,
         description="Anthropic Claude API key"
+    )
+    
+    # Google OAuth2 for user authentication
+    GOOGLE_CLIENT_ID: Optional[str] = Field(
+        default=None,
+        description="Google OAuth2 client ID for user authentication"
+    )
+    GOOGLE_CLIENT_SECRET: Optional[str] = Field(
+        default=None,
+        description="Google OAuth2 client secret for user authentication"
     )
     
     # External APIs
@@ -120,10 +135,17 @@ class Settings(BaseSettings):
     )
     
     # CORS
-    BACKEND_CORS_ORIGINS: list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8080"],
-        description="Allowed CORS origins"
+    BACKEND_CORS_ORIGINS: str = Field(
+        default="http://localhost:3000,http://localhost:8080,http://localhost:5173,http://localhost:5174,https://scrib-ai-writing-superpowers-frontend-263183603168.us-west1.run.app",
+        description="Allowed CORS origins (comma-separated)"
     )
+    
+    @property
+    def get_cors_origins(self) -> list[str]:
+        """Parse CORS origins from string."""
+        if isinstance(self.BACKEND_CORS_ORIGINS, str):
+            return [origin.strip() for origin in self.BACKEND_CORS_ORIGINS.split(",")]
+        return self.BACKEND_CORS_ORIGINS
     
     # Rate limiting
     RATE_LIMIT_ENABLED: bool = Field(
@@ -151,10 +173,21 @@ class Settings(BaseSettings):
         description="LangGraph API key"
     )
     
+    # Google Search API
+    GOOGLE_SEARCH_API_KEY: Optional[str] = Field(
+        default=None,
+        description="Google Custom Search API key"
+    )
+    GOOGLE_SEARCH_ENGINE_ID: Optional[str] = Field(
+        default=None,
+        description="Google Custom Search Engine ID"
+    )
+    
     class Config:
         """Pydantic config."""
         env_file = ".env"
         case_sensitive = True
+        extra = "allow"
 
 
 # Create global settings instance

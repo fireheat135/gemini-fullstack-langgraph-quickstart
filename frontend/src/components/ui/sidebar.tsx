@@ -132,17 +132,17 @@ const sidebarMenuItemVariants = cva(
 )
 
 interface SidebarMenuItemProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+  extends React.HTMLAttributes<HTMLElement>,
     VariantProps<typeof sidebarMenuItemVariants> {
   asChild?: boolean
 }
 
-const SidebarMenuItem = React.forwardRef<HTMLButtonElement, SidebarMenuItemProps>(
+const SidebarMenuItem = React.forwardRef<HTMLElement, SidebarMenuItemProps>(
   ({ className, variant, asChild = false, ...props }, ref) => {
     const Comp = asChild ? "div" : "button"
     return (
       <Comp
-        ref={ref}
+        ref={ref as any}
         className={cn(sidebarMenuItemVariants({ variant }), className)}
         {...props}
       />

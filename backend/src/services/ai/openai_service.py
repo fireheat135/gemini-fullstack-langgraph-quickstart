@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 import openai
 from openai import AsyncOpenAI
 
-from app.core.config import settings
-from app.models.api_key import APIKey
+from src.core.config import settings
+from src.models.api_key import APIKey
 
 
 class OpenAIService:
@@ -37,7 +37,7 @@ class OpenAIService:
     
     def configure_with_api_key(self, api_key_obj: APIKey) -> None:
         """Configure service with encrypted API key object."""
-        from app.core.encryption import decrypt_api_key
+        from src.core.encryption import decrypt_api_key
         
         decrypted_key = decrypt_api_key(api_key_obj.encrypted_api_key)
         self.api_key = decrypted_key

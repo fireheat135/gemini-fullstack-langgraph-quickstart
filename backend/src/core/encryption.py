@@ -1,7 +1,6 @@
 """Encryption utilities for sensitive data like API keys."""
 
 import base64
-from typing import str
 
 from cryptography.fernet import Fernet
 
@@ -15,33 +14,37 @@ def generate_encryption_key() -> str:
 
 def get_encryption_key() -> bytes:
     """Get the encryption key from settings."""
-    if not settings.ENCRYPTION_KEY:
-        raise ValueError("ENCRYPTION_KEY not set in environment variables")
-    
-    return settings.ENCRYPTION_KEY.encode()
+    # Use SECRET_KEY for simplicity in development
+    key = settings.SECRET_KEY.encode()
+    key = key[:32].ljust(32, b'0')  # Ensure 32 bytes
+    return base64.urlsafe_b64encode(key)
 
 
-def encrypt_api_key(api_key: str) -> str:
-    """Encrypt an API key for secure storage."""
+def encrypt_value(value: str) -> str:
+    """Encrypt a string value."""
     try:
         key = get_encryption_key()
         fernet = Fernet(key)
-        encrypted_key = fernet.encrypt(api_key.encode())
-        return base64.b64encode(encrypted_key).decode()
+        encrypted_value = fernet.encrypt(value.encode())
+        return encrypted_value.decode()
     except Exception as e:
-        raise ValueError(f"Failed to encrypt API key: {str(e)}")
+        raise ValueError(f"Failed to encrypt value: {str(e)}")
 
 
-def decrypt_api_key(encrypted_api_key: str) -> str:
-    """Decrypt an API key for use."""
+def decrypt_value(encrypted_value: str) -> str:
+    """Decrypt an encrypted string value."""
     try:
         key = get_encryption_key()
         fernet = Fernet(key)
-        encrypted_bytes = base64.b64decode(encrypted_api_key.encode())
-        decrypted_key = fernet.decrypt(encrypted_bytes)
-        return decrypted_key.decode()
+        decrypted_value = fernet.decrypt(encrypted_value.encode())
+        return decrypted_value.decode()
     except Exception as e:
-        raise ValueError(f"Failed to decrypt API key: {str(e)}")
+        raise ValueError(f"Failed to decrypt value: {str(e)}")
+
+
+# Aliases for backward compatibility
+encrypt_api_key = encrypt_value
+decrypt_api_key = decrypt_value
 
 
 def is_encryption_configured() -> bool:

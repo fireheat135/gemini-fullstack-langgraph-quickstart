@@ -13,8 +13,9 @@ from bs4 import BeautifulSoup
 class CompetitorAnalyzer:
     """競合分析クラス"""
     
-    def __init__(self):
+    def __init__(self, ai_service_manager=None):
         self.session = None
+        self.ai_service_manager = ai_service_manager
     
     async def analyze_competitor_keywords(self, competitor_urls: List[str]) -> Dict[str, List[str]]:
         """競合サイトのキーワードを分析"""
@@ -263,3 +264,37 @@ class CompetitorAnalyzer:
             ],
             "recommendations": recommendations
         }
+    
+    async def analyze_competitors(self, keyword: str, top_n: int = 10) -> List[Dict[str, Any]]:
+        """キーワードの競合を分析する（SEOリサーチAPI用）"""
+        try:
+            # 実際の実装では Google Search API を使用して上位サイトを取得
+            # ここではモックデータを返す
+            competitors = []
+            
+            for i in range(min(top_n, 5)):  # 最大5サイトのモック
+                competitor = {
+                    "url": f"https://example{i+1}.com/{keyword.replace(' ', '-')}",
+                    "title": f"{keyword}に関する詳細ガイド {i+1}",
+                    "meta_description": f"{keyword}について詳しく解説した記事です。",
+                    "ranking_position": i + 1,
+                    "word_count": 2000 + (i * 500),
+                    "headings": [
+                        f"{keyword}とは",
+                        f"{keyword}の基本",
+                        f"{keyword}の活用方法",
+                        f"{keyword}のメリット・デメリット"
+                    ],
+                    "image_count": 5 + i,
+                    "internal_links": 10 + (i * 2),
+                    "external_links": 3 + i,
+                    "domain_authority": 65 - (i * 5),
+                    "content_quality_score": 85 - (i * 3)
+                }
+                competitors.append(competitor)
+            
+            return competitors
+            
+        except Exception as e:
+            print(f"Competitor analysis error: {e}")
+            return []

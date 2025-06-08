@@ -99,8 +99,8 @@ class Article(Base):
     # Relationships
     project = relationship("Project", back_populates="articles")
     author = relationship("User")
-    parent = relationship("Article", remote_side=[id])
-    children = relationship("Article")
+    parent = relationship("Article", remote_side="Article.id", uselist=False)
+    children = relationship("Article", remote_side="Article.parent_id")
     
     def __repr__(self) -> str:
         return f"<Article(id={self.id}, title='{self.title[:50]}...', status='{self.status}')>"

@@ -1,0 +1,50 @@
+# SEO Agent Frontend - Cloud Run Optimized Dockerfile
+FROM node:20-alpine as builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies (including dev dependencies for build)
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Build the application for production
+RUN npm run build
+
+# Production stage with nginx
+FROM nginx:alpine
+
+# Copy built files
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy Cloud Run optimized nginx configuration
+COPY nginx.cloudrun.conf /etc/nginx/conf.d/default.conf
+
+# Copy nginx main config for Cloud Run
+RUN echo 'user nginx;\n\
+worker_processes auto;\n\
+error_log /var/log/nginx/error.log warn;\n\
+pid /var/run/nginx.pid;\n\
+events {\n\
+    worker_connections 1024;\n\
+}\n\
+http {\n\
+    include /etc/nginx/mime.types;\n\
+    default_type application/octet-stream;\n\
+    sendfile on;\n\
+    keepalive_timeout 65;\n\
+    gzip on;\n\
+    include /etc/nginx/conf.d/*.conf;\n\
+}' > /etc/nginx/nginx.conf
+
+# Use Cloud Run PORT environment variable
+ENV PORT=8080
+EXPOSE $PORT
+
+# Start nginx with Cloud Run configuration  
+CMD ["nginx", "-g", "daemon off;"]

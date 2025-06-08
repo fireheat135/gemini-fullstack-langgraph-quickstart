@@ -14,3 +14,8 @@ class Token(BaseModel):
 class TokenPayload(BaseModel):
     """Token payload schema."""
     sub: Optional[str] = None
+
+
+class TokenData(BaseModel):
+    """Token data schema."""
+    username: Optional[str] = None

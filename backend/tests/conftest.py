@@ -11,10 +11,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
-# FastAPIのインポートは実装後に追加
-# from app.main import app
-# from app.models.base import Base
-# from app.core.config import settings
+# FastAPIのインポート
+from fastapi.testclient import TestClient
+from src.main import app
+from src.models.base import Base
+from src.core.config import settings
+from src.db.session import get_db
 
 # テスト用データベースURL
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -37,9 +39,9 @@ def event_loop():
 def test_db_engine():
     """Create a test database engine."""
     engine = create_engine(TEST_SYNC_DATABASE_URL, echo=False)
-    # Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
     yield engine
-    # Base.metadata.drop_all(bind=engine)
+    Base.metadata.drop_all(bind=engine)
     engine.dispose()
 
 
@@ -115,13 +117,18 @@ def mock_openai_client():
 
 
 @pytest.fixture
-async def test_client():
+def client(test_db_session: Session) -> TestClient:
     """Create a test client for FastAPI app."""
-    # アプリケーションのインポートは実装後に有効化
-    # async with AsyncClient(app=app, base_url="http://test") as client:
-    #     yield client
-    async with AsyncClient(base_url="http://test") as client:
+    # Override the database dependency
+    def override_get_db():
+        yield test_db_session
+    
+    app.dependency_overrides[get_db] = override_get_db
+    
+    with TestClient(app) as client:
         yield client
+    
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture

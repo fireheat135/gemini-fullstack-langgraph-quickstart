@@ -1,0 +1,16 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/scrib-ai-writing-superpowers:$COMMIT_SHA'
+      - '-f'
+      - 'Dockerfile.cloudrun'
+      - '.'
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/scrib-ai-writing-superpowers:$COMMIT_SHA'
+
+images:
+  - 'gcr.io/$PROJECT_ID/scrib-ai-writing-superpowers:$COMMIT_SHA'

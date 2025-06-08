@@ -5,16 +5,21 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr
 
+from ..models.user import UserRole
+
 
 class UserBase(BaseModel):
     """Base user schema."""
     email: EmailStr
     name: str
-    role: Optional[str] = None
+    username: Optional[str] = None
+    user_role: UserRole = UserRole.WRITER
+    role: Optional[str] = None  # Job title
     company: Optional[str] = None
     bio: Optional[str] = None
     language: str = "ja"
     timezone: str = "Asia/Tokyo"
+    notification_enabled: bool = True
 
 
 class UserCreate(UserBase):
@@ -49,7 +54,7 @@ class UserInDB(UserBase):
         from_attributes = True
 
 
-class User(UserInDB):
+class UserResponse(UserInDB):
     """User schema for API responses."""
     pass
 

@@ -1,352 +1,734 @@
 """
 Content Management System
-コンテンツ管理システム
-
 過去記事管理・重複検出システム
-- 記事コンテンツの保存と管理
-- コンテンツ重複検出
-- 類似度判定アルゴリズム
-- 重複アラート機能
 
-TDD Green Phase: 最小限の実装
+機能:
+1. 過去記事のコンテンツ・トンマナ保存機能
+2. 記事間重複コンテンツ検出
+3. 類似度判定アルゴリズム
+4. 重複アラート機能
 """
-from typing import Dict, Any, List, Optional, Set
-from datetime import datetime
-import hashlib
-import re
-import math
-from collections import Counter
-import logging
 
-logger = logging.getLogger(__name__)
+import hashlib
+import json
+import re
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from enum import Enum
+from typing import List, Dict, Any, Optional, Tuple
+from collections import Counter
+import math
+
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+# Japanese tokenizer with fallback
+try:
+    import MeCab
+    MECAB_AVAILABLE = True
+except ImportError:
+    MECAB_AVAILABLE = False
+
+try:
+    from janome.tokenizer import Tokenizer as JanomeTokenizer
+    JANOME_AVAILABLE = True
+except ImportError:
+    JANOME_AVAILABLE = False
+
+
+class AlertType(Enum):
+    """アラートタイプ"""
+    EXACT_DUPLICATE = "exact_duplicate"
+    HIGH_SIMILARITY = "high_similarity" 
+    MODERATE_SIMILARITY = "moderate_similarity"
+    TONE_INCONSISTENCY = "tone_inconsistency"
+    KEYWORD_OVERLAP = "keyword_overlap"
+
+
+@dataclass
+class ToneManner:
+    """トーン&マナー設定"""
+    tone: str  # 親しみやすい、フォーマル等
+    formality: str  # カジュアル、丁寧等
+    target_audience: str  # ターゲット読者
+    writing_style: str  # 情報提供型、問題解決型等
+    
+    def __post_init__(self):
+        """バリデーション"""
+        if not all([self.tone, self.formality, self.target_audience, self.writing_style]):
+            raise ValueError("全てのトンマナ要素を指定してください")
+
+
+@dataclass
+class ArticleContent:
+    """記事コンテンツデータ"""
+    id: str
+    title: str
+    content: str
+    keyword: str
+    tone_manner: ToneManner
+    created_at: datetime
+    meta_description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    
+    def __post_init__(self):
+        """バリデーション"""
+        if not all([self.id, self.title, self.content]):
+            raise ValueError("記事の必須フィールドが不足しています")
+
+
+@dataclass
+class SimilarityThreshold:
+    """類似度閾値設定"""
+    exact_match: float = 0.98
+    high_similarity: float = 0.80
+    moderate_similarity: float = 0.60
+    low_similarity: float = 0.40
+
+
+@dataclass
+class SimilarityMatch:
+    """類似マッチ結果"""
+    article_id: str
+    similarity_score: float
+    match_type: str
+    matched_sections: List[str] = None
+
+
+@dataclass
+class SimilarityAnalysis:
+    """類似度分析結果"""
+    cosine_score: float
+    jaccard_score: float
+    semantic_score: float
+    overall_score: float
+    analysis_details: Dict[str, Any] = None
+
+
+@dataclass
+class DuplicateDetectionResult:
+    """重複検出結果"""
+    has_duplicates: bool
+    exact_matches: List[SimilarityMatch]
+    partial_matches: List[SimilarityMatch]
+    tone_manner_matches: List[SimilarityMatch]
+    analysis_summary: Dict[str, Any] = None
+
+
+@dataclass
+class ContentAlert:
+    """コンテンツアラート"""
+    alert_type: AlertType
+    severity: str  # HIGH, MEDIUM, LOW
+    message: str
+    article_id: str
+    related_articles: List[str] = None
+    recommendations: List[str] = None
+
+
+@dataclass
+class StorageResult:
+    """保存結果"""
+    success: bool
+    article_id: str
+    message: str
+    warnings: List[str] = None
 
 
 class ContentManagementSystem:
     """
     コンテンツ管理システム
-    
-    記事の保存、重複検出、類似度計算などを行う
-    単一責任原則に従い、コンテンツ管理に特化
+    過去記事の管理、重複検出、類似度分析を行う
     """
     
     def __init__(self):
-        # 一時的にメモリ内ストレージを使用（後でDB実装）
-        self.articles_storage: Dict[str, Dict[str, Any]] = {}
-        self.versions_storage: Dict[str, List[Dict[str, Any]]] = {}
-        self.duplicate_threshold = 0.4  # より実用的な閾値に設定
+        self.articles: Dict[str, ArticleContent] = {}
+        self.content_fingerprints: Dict[str, str] = {}
+        self.similarity_thresholds = SimilarityThreshold()
         
-    def _validate_article_data(self, article_data: Dict[str, Any]) -> None:
-        """記事データのバリデーション（防御的プログラミング）"""
-        if not article_data:
-            raise ValueError("Article data is required")
-        
-        if not article_data.get("id"):
-            raise ValueError("Article ID is required")
-        
-        if not article_data.get("content") or not article_data.get("content").strip():
-            raise ValueError("Content is required")
-    
-    def save_article(self, article_data: Dict[str, Any]) -> Dict[str, Any]:
-        """記事コンテンツを保存する"""
-        self._validate_article_data(article_data)
-        
-        article_id = article_data["id"]
-        
-        # フィンガープリント生成
-        fingerprint = self.generate_content_fingerprint(article_data["content"])
-        
-        # バージョン管理
-        if article_id in self.articles_storage:
-            current_version = self.articles_storage[article_id].get("version", 1)
-            new_version = current_version + 1
+        # Initialize Japanese tokenizer
+        if MECAB_AVAILABLE:
+            self.mecab = MeCab.Tagger("-Ochasen")
+            self.tokenizer_type = "mecab"
+        elif JANOME_AVAILABLE:
+            self.janome = JanomeTokenizer()
+            self.tokenizer_type = "janome"
         else:
-            new_version = 1
+            self.tokenizer_type = "simple"
         
-        # 記事データ準備
-        saved_article = {
-            **article_data,
-            "fingerprint": fingerprint,
-            "version": new_version,
-            "saved_at": datetime.now(),
-            "tone_profile": article_data.get("tone_manner_profile", {})
-        }
-        
-        # 保存
-        self.articles_storage[article_id] = saved_article
-        
-        # バージョン履歴に追加
-        if article_id not in self.versions_storage:
-            self.versions_storage[article_id] = []
-        self.versions_storage[article_id].append(saved_article.copy())
-        
-        return {
-            "status": "saved",
-            "article_id": article_id,
-            "fingerprint": fingerprint,
-            "version": new_version,
-            "tone_profile": saved_article["tone_profile"]
-        }
-    
-    def generate_content_fingerprint(self, content: str) -> str:
-        """コンテンツのフィンガープリントを生成"""
-        if not content:
-            raise ValueError("Content is required for fingerprinting")
-        
-        # コンテンツを正規化してハッシュ化
-        normalized_content = self.clean_content(content)
-        content_hash = hashlib.sha256(normalized_content.encode('utf-8')).hexdigest()
-        return content_hash[:16]  # 短縮版
-    
-    def detect_duplicates(self, article_data: Dict[str, Any]) -> Dict[str, Any]:
-        """重複コンテンツを検出"""
-        self._validate_article_data(article_data)
-        
-        target_content = article_data["content"]
-        max_similarity = 0.0
-        most_similar_article = None
-        
-        # 既存記事との類似度を計算
-        for stored_id, stored_article in self.articles_storage.items():
-            if stored_id != article_data.get("id"):  # 同じ記事は除外
-                similarity = self.calculate_similarity(target_content, stored_article["content"])
-                if similarity > max_similarity:
-                    max_similarity = similarity
-                    most_similar_article = stored_article
-        
-        is_duplicate = max_similarity > self.duplicate_threshold
-        
-        return {
-            "is_duplicate": is_duplicate,
-            "similarity_score": max_similarity,
-            "most_similar_article": most_similar_article["id"] if most_similar_article else None
-        }
-    
-    def calculate_similarity(self, content1: str, content2: str) -> float:
-        """コンテンツ間の類似度を計算"""
-        if not content1 or not content2:
-            return 0.0
-        
-        # クリーンアップ
-        clean1 = self.clean_content(content1)
-        clean2 = self.clean_content(content2)
-        
-        # 複数の類似度を計算して組み合わせる
-        cosine_sim = self.calculate_cosine_similarity(clean1, clean2)
-        jaccard_sim = self._calculate_jaccard_similarity(clean1, clean2)
-        character_sim = self._calculate_character_similarity(clean1, clean2)
-        
-        # 重み付け平均（日本語コンテンツに最適化）
-        final_similarity = (
-            cosine_sim * 0.5 +           # 単語レベルの類似度
-            jaccard_sim * 0.3 +          # 集合の類似度
-            character_sim * 0.2          # 文字レベルの類似度
+        self.tfidf_vectorizer = TfidfVectorizer(
+            analyzer='word',
+            ngram_range=(1, 2),
+            max_features=10000
         )
+        self._content_vectors = {}
         
-        return min(final_similarity, 1.0)  # 1.0を超えないように制限
+    # ===== 記事保存・管理機能 =====
+    
+    def store_article(self, article: ArticleContent) -> StorageResult:
+        """
+        記事を保存する
+        
+        Args:
+            article: 保存する記事
+            
+        Returns:
+            StorageResult: 保存結果
+        """
+        try:
+            # バリデーション
+            if not article.id or not article.title or not article.content:
+                return StorageResult(
+                    success=False,
+                    article_id=article.id,
+                    message="無効な記事データです。必須フィールドが不足しています。"
+                )
+            
+            warnings = []
+            
+            # 重複チェック
+            if article.id in self.articles:
+                warnings.append(f"記事ID '{article.id}' は既に存在します。上書きされます。")
+            
+            # フィンガープリント生成
+            fingerprint = self.generate_content_fingerprint(article.content)
+            
+            # 保存
+            self.articles[article.id] = article
+            self.content_fingerprints[article.id] = fingerprint
+            
+            # ベクトル化（類似度計算用）
+            self._update_content_vectors()
+            
+            return StorageResult(
+                success=True,
+                article_id=article.id,
+                message="記事が正常に保存されました",
+                warnings=warnings if warnings else None
+            )
+            
+        except Exception as e:
+            return StorageResult(
+                success=False,
+                article_id=article.id if hasattr(article, 'id') else "unknown",
+                message=f"記事保存中にエラーが発生しました: {str(e)}"
+            )
+    
+    def get_article_by_id(self, article_id: str) -> Optional[ArticleContent]:
+        """
+        記事IDで記事を取得
+        
+        Args:
+            article_id: 記事ID
+            
+        Returns:
+            ArticleContent: 記事データまたはNone
+        """
+        return self.articles.get(article_id)
+    
+    def get_articles_by_keyword(self, keyword: str) -> List[ArticleContent]:
+        """
+        キーワードで記事を検索
+        
+        Args:
+            keyword: 検索キーワード
+            
+        Returns:
+            List[ArticleContent]: マッチした記事のリスト
+        """
+        matching_articles = []
+        
+        for article in self.articles.values():
+            if (keyword.lower() in article.keyword.lower() or
+                keyword.lower() in article.title.lower() or
+                keyword.lower() in article.content.lower()):
+                matching_articles.append(article)
+        
+        return matching_articles
+    
+    def get_articles_by_date_range(self, start_date: datetime, end_date: datetime) -> List[ArticleContent]:
+        """
+        日付範囲で記事を検索
+        
+        Args:
+            start_date: 開始日
+            end_date: 終了日
+            
+        Returns:
+            List[ArticleContent]: 範囲内の記事のリスト
+        """
+        matching_articles = []
+        
+        for article in self.articles.values():
+            if start_date <= article.created_at <= end_date:
+                matching_articles.append(article)
+        
+        return sorted(matching_articles, key=lambda x: x.created_at, reverse=True)
+    
+    # ===== 重複検出機能 =====
+    
+    def detect_duplicates(self, new_article: ArticleContent) -> DuplicateDetectionResult:
+        """
+        新しい記事の重複を検出
+        
+        Args:
+            new_article: チェックする記事
+            
+        Returns:
+            DuplicateDetectionResult: 重複検出結果
+        """
+        exact_matches = []
+        partial_matches = []
+        tone_manner_matches = []
+        
+        if not self.articles:
+            return DuplicateDetectionResult(
+                has_duplicates=False,
+                exact_matches=[],
+                partial_matches=[],
+                tone_manner_matches=[]
+            )
+        
+        new_fingerprint = self.generate_content_fingerprint(new_article.content)
+        
+        for existing_id, existing_article in self.articles.items():
+            # 完全重複チェック
+            existing_fingerprint = self.content_fingerprints.get(existing_id)
+            if existing_fingerprint == new_fingerprint:
+                exact_matches.append(SimilarityMatch(
+                    article_id=existing_id,
+                    similarity_score=1.0,
+                    match_type="exact_duplicate"
+                ))
+                continue
+            
+            # 類似度分析
+            analysis = self.analyze_semantic_similarity(
+                new_article.content,
+                existing_article.content
+            )
+            
+            # 部分重複チェック
+            if analysis.overall_score >= self.similarity_thresholds.high_similarity:
+                partial_matches.append(SimilarityMatch(
+                    article_id=existing_id,
+                    similarity_score=analysis.overall_score,
+                    match_type="high_similarity" if analysis.overall_score >= 0.8 else "moderate_similarity"
+                ))
+            
+            # トンマナ類似チェック
+            tone_similarity = self.calculate_tone_manner_similarity(
+                new_article.tone_manner,
+                existing_article.tone_manner
+            )
+            
+            if tone_similarity >= 0.8:  # 高いトンマナ類似度
+                tone_manner_matches.append(SimilarityMatch(
+                    article_id=existing_id,
+                    similarity_score=tone_similarity,
+                    match_type="tone_manner_match"
+                ))
+        
+        has_duplicates = bool(exact_matches or partial_matches)
+        
+        return DuplicateDetectionResult(
+            has_duplicates=has_duplicates,
+            exact_matches=exact_matches,
+            partial_matches=partial_matches,
+            tone_manner_matches=tone_manner_matches,
+            analysis_summary={
+                "total_checked": len(self.articles),
+                "exact_matches_count": len(exact_matches),
+                "partial_matches_count": len(partial_matches),
+                "tone_matches_count": len(tone_manner_matches)
+            }
+        )
+    
+    # ===== 類似度判定アルゴリズム =====
     
     def calculate_cosine_similarity(self, text1: str, text2: str) -> float:
-        """コサイン類似度を計算"""
-        if not text1 or not text2:
+        """
+        コサイン類似度を計算
+        
+        Args:
+            text1: テキスト1
+            text2: テキスト2
+            
+        Returns:
+            float: コサイン類似度 (0-1)
+        """
+        try:
+            # テキストをベクトル化
+            vectorizer = TfidfVectorizer(analyzer='word', ngram_range=(1, 2))
+            tfidf_matrix = vectorizer.fit_transform([text1, text2])
+            
+            # コサイン類似度計算
+            similarity_matrix = cosine_similarity(tfidf_matrix)
+            return float(similarity_matrix[0, 1])
+            
+        except Exception:
+            return 0.0
+    
+    def calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
+        """
+        Jaccard類似度を計算
+        
+        Args:
+            text1: テキスト1  
+            text2: テキスト2
+            
+        Returns:
+            float: Jaccard類似度 (0-1)
+        """
+        try:
+            # 単語に分割
+            words1 = set(self._tokenize_japanese(text1))
+            words2 = set(self._tokenize_japanese(text2))
+            
+            # Jaccard係数計算
+            intersection = len(words1.intersection(words2))
+            union = len(words1.union(words2))
+            
+            return intersection / union if union > 0 else 0.0
+            
+        except Exception:
+            return 0.0
+    
+    def analyze_semantic_similarity(self, text1: str, text2: str) -> SimilarityAnalysis:
+        """
+        意味的類似度を分析
+        
+        Args:
+            text1: テキスト1
+            text2: テキスト2
+            
+        Returns:
+            SimilarityAnalysis: 類似度分析結果
+        """
+        cosine_score = self.calculate_cosine_similarity(text1, text2)
+        jaccard_score = self.calculate_jaccard_similarity(text1, text2)
+        
+        # 簡易的な意味的類似度（実際はWord2VecやBERTを使用することが多い）
+        semantic_score = (cosine_score + jaccard_score) / 2
+        
+        # 総合スコア（重み付き平均）
+        overall_score = (
+            cosine_score * 0.4 +
+            jaccard_score * 0.3 +
+            semantic_score * 0.3
+        )
+        
+        return SimilarityAnalysis(
+            cosine_score=cosine_score,
+            jaccard_score=jaccard_score,
+            semantic_score=semantic_score,
+            overall_score=overall_score,
+            analysis_details={
+                "text1_length": len(text1),
+                "text2_length": len(text2),
+                "common_words": len(set(self._tokenize_japanese(text1)).intersection(
+                    set(self._tokenize_japanese(text2))
+                ))
+            }
+        )
+    
+    def calculate_tone_manner_similarity(self, tone1: ToneManner, tone2: ToneManner) -> float:
+        """
+        トンマナ類似度を計算
+        
+        Args:
+            tone1: トンマナ1
+            tone2: トンマナ2
+            
+        Returns:
+            float: 類似度 (0-1)
+        """
+        if not tone1 or not tone2:
             return 0.0
         
-        # 同じテキストの場合
-        if text1 == text2:
-            return 1.0
+        # 各要素の一致度を計算
+        matches = 0
+        total = 4
         
-        # テキストを単語に分割
-        words1 = self._tokenize(text1)
-        words2 = self._tokenize(text2)
+        if tone1.tone == tone2.tone:
+            matches += 1
+        if tone1.formality == tone2.formality:
+            matches += 1
+        if tone1.target_audience == tone2.target_audience:
+            matches += 1
+        if tone1.writing_style == tone2.writing_style:
+            matches += 1
         
-        if not words1 or not words2:
-            return 0.0
-        
-        # 単語の出現回数をカウント
-        counter1 = Counter(words1)
-        counter2 = Counter(words2)
-        
-        # 共通する単語を取得
-        common_words = set(counter1.keys()) & set(counter2.keys())
-        
-        if not common_words:
-            return 0.0
-        
-        # コサイン類似度を計算
-        dot_product = sum(counter1[word] * counter2[word] for word in common_words)
-        magnitude1 = math.sqrt(sum(count ** 2 for count in counter1.values()))
-        magnitude2 = math.sqrt(sum(count ** 2 for count in counter2.values()))
-        
-        if magnitude1 == 0 or magnitude2 == 0:
-            return 0.0
-        
-        return dot_product / (magnitude1 * magnitude2)
+        return matches / total
     
-    def _tokenize(self, text: str) -> List[str]:
-        """テキストを単語に分割"""
-        # 日本語と英語の両方に対応した簡易トークナイザー
-        # 英数字、ひらがな、カタカナ、漢字を単語として抽出
-        words = re.findall(r'[a-zA-Z0-9]+|[ぁ-んァ-ン一-龯]+', text.lower())
-        return [word for word in words if len(word) > 1]  # 1文字の単語は除外
+    # ===== アラート機能 =====
     
-    def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
-        """Jaccard係数を計算"""
-        if not text1 or not text2:
-            return 0.0
+    def generate_content_alerts(self, new_article: ArticleContent) -> List[ContentAlert]:
+        """
+        コンテンツアラートを生成
         
-        words1 = set(self._tokenize(text1))
-        words2 = set(self._tokenize(text2))
+        Args:
+            new_article: チェックする記事
+            
+        Returns:
+            List[ContentAlert]: アラートのリスト
+        """
+        alerts = []
         
-        if not words1 and not words2:
-            return 1.0
+        if not self.articles:
+            return alerts
         
-        intersection = words1 & words2
-        union = words1 | words2
+        # 重複検出
+        duplicate_result = self.detect_duplicates(new_article)
         
-        if not union:
-            return 0.0
+        # 完全重複アラート
+        for match in duplicate_result.exact_matches:
+            alerts.append(ContentAlert(
+                alert_type=AlertType.EXACT_DUPLICATE,
+                severity="HIGH",
+                message=f"完全重複のコンテンツが検出されました（記事ID: {match.article_id}）",
+                article_id=new_article.id,
+                related_articles=[match.article_id],
+                recommendations=[
+                    "コンテンツを大幅に修正してください",
+                    "異なる視点からのアプローチを検討してください"
+                ]
+            ))
         
-        return len(intersection) / len(union)
-    
-    def _calculate_character_similarity(self, text1: str, text2: str) -> float:
-        """文字レベルの類似度を計算（日本語に特化）"""
-        if not text1 or not text2:
-            return 0.0
+        # 高類似度アラート
+        for match in duplicate_result.partial_matches:
+            if match.similarity_score >= self.similarity_thresholds.high_similarity:
+                alerts.append(ContentAlert(
+                    alert_type=AlertType.HIGH_SIMILARITY,
+                    severity="HIGH" if match.similarity_score >= 0.9 else "MEDIUM",
+                    message=f"高い類似度のコンテンツが検出されました（類似度: {match.similarity_score:.2f}）",
+                    article_id=new_article.id,
+                    related_articles=[match.article_id],
+                    recommendations=[
+                        "独自性を高める内容を追加してください",
+                        "異なる角度からの情報を盛り込んでください"
+                    ]
+                ))
         
-        # 文字ベースのn-gram（2-gram）を使用
-        ngrams1 = self._generate_character_ngrams(text1, n=2)
-        ngrams2 = self._generate_character_ngrams(text2, n=2)
-        
-        if not ngrams1 and not ngrams2:
-            return 1.0
-        
-        common_ngrams = ngrams1 & ngrams2
-        total_ngrams = ngrams1 | ngrams2
-        
-        if not total_ngrams:
-            return 0.0
-        
-        return len(common_ngrams) / len(total_ngrams)
-    
-    def _generate_character_ngrams(self, text: str, n: int = 2) -> Set[str]:
-        """文字のn-gramを生成"""
-        # 日本語文字のみを抽出
-        japanese_chars = re.sub(r'[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', '', text)
-        
-        if len(japanese_chars) < n:
-            return set([japanese_chars]) if japanese_chars else set()
-        
-        ngrams = set()
-        for i in range(len(japanese_chars) - n + 1):
-            ngrams.add(japanese_chars[i:i + n])
-        
-        return ngrams
-    
-    def set_duplicate_threshold(self, threshold: float) -> None:
-        """重複判定の閾値を設定"""
-        if not 0.0 <= threshold <= 1.0:
-            raise ValueError("Threshold must be between 0.0 and 1.0")
-        self.duplicate_threshold = threshold
-    
-    def check_duplicate_alert(self, article_data: Dict[str, Any]) -> Dict[str, Any]:
-        """重複アラートをチェック"""
-        duplicate_result = self.detect_duplicates(article_data)
-        
-        alert_triggered = duplicate_result["similarity_score"] > self.duplicate_threshold
-        threshold_exceeded = duplicate_result["similarity_score"] > self.duplicate_threshold
-        
-        similar_articles = []
-        if alert_triggered and duplicate_result["most_similar_article"]:
-            similar_articles.append({
-                "article_id": duplicate_result["most_similar_article"],
-                "similarity_score": duplicate_result["similarity_score"]
-            })
-        
-        return {
-            "alert_triggered": alert_triggered,
-            "threshold_exceeded": threshold_exceeded,
-            "similar_articles": similar_articles,
-            "threshold": self.duplicate_threshold
-        }
-    
-    def get_article_versions(self, article_id: str) -> List[Dict[str, Any]]:
-        """記事のバージョン履歴を取得"""
-        if not article_id:
-            raise ValueError("Article ID is required")
-        
-        return self.versions_storage.get(article_id, [])
-    
-    def get_article(self, article_id: str) -> Dict[str, Any]:
-        """記事を取得"""
-        if not article_id:
-            raise ValueError("Article ID is required")
-        
-        article = self.articles_storage.get(article_id)
-        if not article:
-            raise ValueError(f"Article with ID {article_id} not found")
-        
-        return article
-    
-    def search_similar_articles(self, query: str, threshold: float = 0.5) -> List[Dict[str, Any]]:
-        """類似記事を検索"""
-        if not query:
-            raise ValueError("Query is required")
-        
-        similar_articles = []
-        
-        for article_id, article in self.articles_storage.items():
-            similarity = self.calculate_similarity(query, article["content"])
-            if similarity >= threshold:
-                similar_articles.append({
-                    "article_id": article_id,
-                    "title": article.get("title", ""),
-                    "similarity_score": similarity,
-                    "content_preview": article["content"][:100] + "..." if len(article["content"]) > 100 else article["content"]
-                })
-        
-        # 類似度の高い順にソート
-        similar_articles.sort(key=lambda x: x["similarity_score"], reverse=True)
-        
-        return similar_articles
-    
-    def clean_content(self, content: str) -> str:
-        """コンテンツをクリーンアップ"""
-        if not content:
-            return ""
-        
-        # 余分な空白や改行を除去
-        cleaned = re.sub(r'\s+', ' ', content.strip())
-        cleaned = re.sub(r'\n\s*\n', '\n', cleaned)
-        
-        return cleaned
-    
-    def batch_duplicate_check(self, articles: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """一括重複チェック"""
-        if not articles:
-            raise ValueError("Articles list is required")
-        
-        duplicate_pairs = []
-        total_articles = len(articles)
-        
-        # 全ての記事ペアで類似度をチェック
-        for i in range(total_articles):
-            for j in range(i + 1, total_articles):
-                article1 = articles[i]
-                article2 = articles[j]
-                
-                similarity = self.calculate_similarity(
-                    article1.get("content", ""),
-                    article2.get("content", "")
+        # トンマナ一貫性アラート
+        existing_tones = [article.tone_manner for article in self.articles.values()]
+        if existing_tones:
+            most_common_tone = self._find_most_common_tone(existing_tones)
+            if most_common_tone:
+                tone_similarity = self.calculate_tone_manner_similarity(
+                    new_article.tone_manner,
+                    most_common_tone
                 )
                 
-                if similarity > self.duplicate_threshold:
-                    duplicate_pairs.append({
-                        "article1_id": article1.get("id", f"index_{i}"),
-                        "article2_id": article2.get("id", f"index_{j}"),
-                        "similarity_score": similarity
-                    })
+                if tone_similarity < 0.5:  # 低い一貫性
+                    alerts.append(ContentAlert(
+                        alert_type=AlertType.TONE_INCONSISTENCY,
+                        severity="MEDIUM" if tone_similarity < 0.3 else "LOW",
+                        message=f"トンマナの一貫性が低い可能性があります（一致度: {tone_similarity:.2f}）",
+                        article_id=new_article.id,
+                        recommendations=[
+                            "既存記事のトンマナに合わせることを検討してください",
+                            "ブランドガイドラインを確認してください"
+                        ]
+                    ))
         
-        return {
-            "total_articles": total_articles,
-            "duplicate_pairs": duplicate_pairs,
-            "duplicate_count": len(duplicate_pairs),
-            "threshold": self.duplicate_threshold
-        }
+        return alerts
+    
+    # ===== 高度な分析機能 =====
+    
+    def generate_content_fingerprint(self, content: str) -> str:
+        """
+        コンテンツのフィンガープリントを生成
+        
+        Args:
+            content: コンテンツ
+            
+        Returns:
+            str: フィンガープリント（ハッシュ値）
+        """
+        # 正規化（空白、改行、句読点を統一）
+        normalized = re.sub(r'\s+', ' ', content.strip())
+        normalized = re.sub(r'[。、！？\.\,\\!\?]', '', normalized)
+        
+        # SHA-256ハッシュ生成
+        return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+    
+    def batch_duplicate_analysis(self, articles: List[ArticleContent]) -> List[DuplicateDetectionResult]:
+        """
+        複数記事のバッチ重複分析
+        
+        Args:
+            articles: 分析する記事のリスト
+            
+        Returns:
+            List[DuplicateDetectionResult]: 各記事の重複検出結果
+        """
+        results = []
+        
+        for article in articles:
+            result = self.detect_duplicates(article)
+            results.append(result)
+        
+        return results
+    
+    def calculate_content_quality_score(self, article: ArticleContent) -> Dict[str, float]:
+        """
+        コンテンツ品質スコアを計算
+        
+        Args:
+            article: 分析する記事
+            
+        Returns:
+            Dict[str, float]: 品質スコア
+        """
+        scores = {}
+        
+        # 独自性スコア（重複度の逆数）
+        if self.articles:
+            duplicate_result = self.detect_duplicates(article)
+            max_similarity = 0.0
+            if duplicate_result.partial_matches:
+                max_similarity = max(match.similarity_score for match in duplicate_result.partial_matches)
+            scores["uniqueness_score"] = 1.0 - max_similarity
+        else:
+            scores["uniqueness_score"] = 1.0
+        
+        # トンマナ一貫性スコア
+        existing_tones = [a.tone_manner for a in self.articles.values()]
+        if existing_tones:
+            most_common_tone = self._find_most_common_tone(existing_tones)
+            if most_common_tone:
+                scores["tone_consistency_score"] = self.calculate_tone_manner_similarity(
+                    article.tone_manner,
+                    most_common_tone
+                )
+            else:
+                scores["tone_consistency_score"] = 1.0
+        else:
+            scores["tone_consistency_score"] = 1.0
+        
+        # キーワード関連性スコア（簡易計算）
+        keyword_in_content = article.keyword.lower() in article.content.lower()
+        keyword_in_title = article.keyword.lower() in article.title.lower()
+        scores["keyword_relevance_score"] = (
+            0.7 if keyword_in_content else 0.0
+        ) + (0.3 if keyword_in_title else 0.0)
+        
+        # 総合スコア
+        scores["overall_score"] = (
+            scores["uniqueness_score"] * 0.4 +
+            scores["tone_consistency_score"] * 0.3 +
+            scores["keyword_relevance_score"] * 0.3
+        )
+        
+        return scores
+    
+    # ===== 設定管理 =====
+    
+    def set_similarity_thresholds(self, thresholds: SimilarityThreshold):
+        """類似度閾値を設定"""
+        self.similarity_thresholds = thresholds
+    
+    def get_similarity_thresholds(self) -> SimilarityThreshold:
+        """類似度閾値を取得"""
+        return self.similarity_thresholds
+    
+    # ===== プライベートメソッド =====
+    
+    def _tokenize_japanese(self, text: str) -> List[str]:
+        """
+        日本語テキストをトークン化
+        
+        Args:
+            text: 入力テキスト
+            
+        Returns:
+            List[str]: トークンのリスト
+        """
+        try:
+            if self.tokenizer_type == "mecab":
+                result = []
+                node = self.mecab.parseToNode(text)
+                
+                while node:
+                    if node.surface and node.part_of_speech.split(',')[0] in ['名詞', '動詞', '形容詞']:
+                        result.append(node.surface)
+                    node = node.next
+                
+                return result
+                
+            elif self.tokenizer_type == "janome":
+                result = []
+                for token in self.janome.tokenize(text, wakati=False):
+                    if token.part_of_speech.split(',')[0] in ['名詞', '動詞', '形容詞']:
+                        result.append(token.surface)
+                
+                return result
+            
+            else:
+                # Simple tokenization fallback
+                return text.split()
+            
+        except Exception:
+            # Fallback to simple tokenization
+            return text.split()
+    
+    def _update_content_vectors(self):
+        """コンテンツベクトルを更新"""
+        if not self.articles:
+            return
+        
+        contents = [article.content for article in self.articles.values()]
+        article_ids = list(self.articles.keys())
+        
+        try:
+            vectors = self.tfidf_vectorizer.fit_transform(contents)
+            self._content_vectors = {
+                article_ids[i]: vectors[i] for i in range(len(article_ids))
+            }
+        except Exception:
+            self._content_vectors = {}
+    
+    def _find_most_common_tone(self, tones: List[ToneManner]) -> Optional[ToneManner]:
+        """
+        最も一般的なトンマナを特定
+        
+        Args:
+            tones: トンマナのリスト
+            
+        Returns:
+            ToneManner: 最も一般的なトンマナ
+        """
+        if not tones:
+            return None
+        
+        # 各要素の出現回数をカウント
+        tone_strings = [f"{t.tone}|{t.formality}|{t.target_audience}|{t.writing_style}" for t in tones]
+        counter = Counter(tone_strings)
+        
+        if not counter:
+            return tones[0]
+        
+        most_common_string = counter.most_common(1)[0][0]
+        parts = most_common_string.split('|')
+        
+        return ToneManner(
+            tone=parts[0],
+            formality=parts[1],
+            target_audience=parts[2],
+            writing_style=parts[3]
+        )
+
+
+# エクスポート
+__all__ = [
+    'ContentManagementSystem',
+    'ArticleContent',
+    'DuplicateDetectionResult',
+    'SimilarityAnalysis',
+    'ContentAlert',
+    'ToneManner',
+    'AlertType',
+    'SimilarityThreshold'
+]

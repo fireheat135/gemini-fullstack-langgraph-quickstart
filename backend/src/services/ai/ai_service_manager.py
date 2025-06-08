@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional, Union
 
 from sqlalchemy.orm import Session
 
-from app.models.api_key import APIKey, APIProvider
-from app.services.api_key_service import APIKeyService
+from src.models.api_key import APIKey, APIProvider
+from src.services.api_key_service import APIKeyService
 from .anthropic_service import AnthropicService
 from .gemini_service import GeminiService
 from .openai_service import OpenAIService

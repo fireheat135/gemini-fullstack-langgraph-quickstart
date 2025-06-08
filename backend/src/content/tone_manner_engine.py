@@ -1,1060 +1,932 @@
 """
 Tone & Manner Engine
-トーン&マナー設定エンジン
+トンマナ一貫性チェック機能
 
-Phase 5: コンテンツ管理・品質担保
-- 過去記事とのトンマナ比較機能
-- 文体・表現一貫性チェック機能
-- ブランドボイス適合性評価システム
-- 修正提案生成機能
-
-TDD Green Phase: 最小限の実装
+機能:
+1. 過去記事とのトンマナ比較
+2. 文体・表現一貫性チェック
+3. ブランドボイス適合性評価
+4. 修正提案生成
 """
-from typing import Dict, Any, List, Tuple, Optional
+
 import re
-import math
-from collections import Counter
-import logging
+import statistics
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import List, Dict, Any, Optional, Tuple
+from collections import Counter, defaultdict
+import hashlib
+import json
 
-logger = logging.getLogger(__name__)
+from .content_management_system import ArticleContent, ToneManner
 
 
-class ToneMannnerEngine:
-    """トーン&マナー設定エンジン"""
+class ToneType(Enum):
+    """トーンタイプ"""
+    FRIENDLY = "親しみやすい"
+    FORMAL = "フォーマル"
+    PROFESSIONAL = "プロフェッショナル"
+    CASUAL = "カジュアル"
+    WARM = "温かい"
+    AUTHORITATIVE = "権威的"
+
+
+class FormalityLevel(Enum):
+    """敬語レベル"""
+    VERY_CASUAL = "とてもカジュアル"
+    CASUAL = "カジュアル"
+    NEUTRAL = "中立"
+    POLITE = "丁寧"
+    VERY_FORMAL = "とてもフォーマル"
+
+
+class WritingStyle(Enum):
+    """文体スタイル"""
+    INFORMATIVE = "情報提供型"
+    PROBLEM_SOLVING = "問題解決型"
+    COMPARISON = "比較検討型"
+    ENTERTAINMENT = "エンターテイメント型"
+    QA_STYLE = "Q&A型"
+    NARRATIVE = "物語型"
+    ACADEMIC = "学術的"
+
+
+class InconsistencyType(Enum):
+    """不一致タイプ"""
+    TONE_MISMATCH = "tone_mismatch"
+    FORMALITY_MISMATCH = "formality_mismatch"
+    WRITING_STYLE_MISMATCH = "writing_style_mismatch"
+    TARGET_AUDIENCE_MISMATCH = "target_audience_mismatch"
+    EXPRESSION_INCONSISTENCY = "expression_inconsistency"
+    BRAND_VOICE_VIOLATION = "brand_voice_violation"
+
+
+class RecommendationType(Enum):
+    """修正提案タイプ"""
+    TONE_ADJUSTMENT = "tone_adjustment"
+    FORMALITY_ADJUSTMENT = "formality_adjustment"
+    STYLE_ADJUSTMENT = "style_adjustment"
+    EXPRESSION_MODERNIZATION = "expression_modernization"
+    BRAND_ALIGNMENT = "brand_alignment"
+    AUDIENCE_ALIGNMENT = "audience_alignment"
+
+
+@dataclass
+class BrandVoiceProfile:
+    """ブランドボイスプロファイル"""
+    brand_name: str
+    preferred_tone: ToneType
+    preferred_formality: FormalityLevel
+    preferred_writing_style: WritingStyle
+    target_audience: str
+    brand_keywords: List[str]
+    avoid_keywords: List[str]
+    voice_characteristics: Dict[str, float]  # warmth, professionalism等のスコア
+    style_guidelines: Dict[str, bool]
+    
+    def __post_init__(self):
+        """バリデーション"""
+        if not all([self.brand_name, self.target_audience]):
+            raise ValueError("ブランド名とターゲット読者は必須です")
+
+
+@dataclass
+class ToneInconsistency:
+    """トンマナ不一致情報"""
+    inconsistency_type: InconsistencyType
+    severity: str  # HIGH, MEDIUM, LOW
+    description: str
+    location: str  # 文章内の位置
+    suggested_fix: str
+    confidence_score: float
+
+
+@dataclass
+class ToneMannerAnalysis:
+    """トンマナ分析結果"""
+    article_id: str
+    consistency_score: float  # 0-1
+    target_tone_match: bool
+    formality_match: bool
+    style_match: bool
+    inconsistencies: List[ToneInconsistency]
+    brand_voice_compliance: Optional[float] = None
+    recommendations_summary: Optional[str] = None
+
+
+@dataclass
+class ToneRecommendation:
+    """トンマナ修正提案"""
+    recommendation_type: RecommendationType
+    priority: str  # HIGH, MEDIUM, LOW
+    original_text: str
+    suggested_text: str
+    explanation: str
+    confidence_score: float
+
+
+@dataclass
+class ConsistencyReport:
+    """一貫性レポート"""
+    overall_consistency_score: float
+    article_analyses: List[ToneMannerAnalysis]
+    common_inconsistencies: List[InconsistencyType]
+    tone_evolution_trend: Dict[str, Any]
+    recommendations: List[ToneRecommendation]
+    generated_at: datetime = field(default_factory=datetime.now)
+
+
+class ToneMannerEngine:
+    """
+    トーン&マナーエンジン
+    過去記事との一貫性チェックと修正提案を行う
+    """
     
     def __init__(self):
-        # 基本トーンテンプレート
-        self.tone_templates = {
-            "friendly_casual": {
-                "tone_type": "friendly_casual",
-                "description": "親しみやすく気軽な雰囲気で、友人に話すような自然な文体",
-                "characteristics": [
-                    "敬語と丁寧語のバランス",
-                    "親近感のある表現",
-                    "読者との距離感を縮める"
-                ],
-                "sample_phrases": [
-                    "～ですよね",
-                    "実は～なんです",
-                    "ちょっと気になるのが",
-                    "おすすめしたいのが",
-                    "きっと喜んでもらえると思います"
-                ],
-                "writing_guidelines": [
-                    "硬すぎない敬語を使用",
-                    "読者への共感を示す",
-                    "具体例を多用する",
-                    "疑問形で読者の関心を引く"
-                ]
-            },
-            "professional_helpful": {
-                "tone_type": "professional_helpful",
-                "description": "専門的でありながら親切で、信頼できるアドバイザーとしての文体",
-                "characteristics": [
-                    "専門知識の提供",
-                    "客観的で正確な情報",
-                    "読者の問題解決に焦点"
-                ],
-                "sample_phrases": [
-                    "専門的な観点から申し上げますと",
-                    "経験上おすすめできるのは",
-                    "注意していただきたいポイントは",
-                    "確実な方法としては",
-                    "最適な選択肢は"
-                ],
-                "writing_guidelines": [
-                    "根拠のある情報を提供",
-                    "段階的な説明を心がける",
-                    "専門用語には説明を付ける",
-                    "実践的なアドバイスを含める"
-                ]
-            },
-            "warm_emotional": {
-                "tone_type": "warm_emotional",
-                "description": "温かく感情的で、読者の心に寄り添うような共感的な文体",
-                "characteristics": [
-                    "感情に訴える表現",
-                    "ストーリー性のある内容",
-                    "読者の気持ちへの共感"
-                ],
-                "sample_phrases": [
-                    "心を込めて選んだ",
-                    "特別な想いを伝える",
-                    "きっと心に響く",
-                    "大切な人への愛情を",
-                    "感動を与えてくれる"
-                ],
-                "writing_guidelines": [
-                    "エモーショナルな表現を活用",
-                    "読者の体験に共感する",
-                    "ストーリーテリングを取り入れる",
-                    "温かみのある言葉選びを重視"
-                ]
-            },
-            "expert_authoritative": {
-                "tone_type": "expert_authoritative",
-                "description": "専門家としての権威性を示し、確実で信頼性の高い情報を提供する文体",
-                "characteristics": [
-                    "高い専門性の表現",
-                    "データに基づく内容",
-                    "権威的だが親しみやすい"
-                ],
-                "sample_phrases": [
-                    "園芸専門家の視点から",
-                    "研究結果によると",
-                    "長年の経験から言えることは",
-                    "確実にお伝えできるのは",
-                    "専門的な知見として"
-                ],
-                "writing_guidelines": [
-                    "専門的な根拠を示す",
-                    "データや統計を活用",
-                    "業界用語を適切に使用",
-                    "権威性と親しみやすさのバランス"
-                ]
-            }
-        }
+        self.historical_articles: List[ArticleContent] = []
+        self.brand_voice_profile: Optional[BrandVoiceProfile] = None
+        self.tone_patterns: Dict[str, Any] = {}
+        self.expression_patterns: Dict[str, List[str]] = defaultdict(list)
         
-        # 花・季節特有の表現集
-        self.flower_expressions = {
-            "季節感": [
-                "春の訪れとともに",
-                "季節の移ろいとともに",
-                "〜の季節にふさわしい",
-                "この時期ならではの",
-                "季節の恵みとして"
-            ],
-            "感情表現": [
-                "心を癒してくれる",
-                "優雅な美しさ",
-                "気品ある佇まい",
-                "凛とした美しさ",
-                "華やかな存在感"
-            ],
-            "ギフト関連": [
-                "心を込めた贈り物",
-                "特別な日にふさわしい",
-                "想いを伝える",
-                "記念に残る",
-                "喜びを分かち合う"
-            ]
-        }
+        # 敬語・表現パターンの辞書
+        self._formality_patterns = self._initialize_formality_patterns()
+        self._tone_indicators = self._initialize_tone_indicators()
+        self._expression_modernization_map = self._initialize_expression_modernization()
+    
+    # ===== 設定・管理機能 =====
+    
+    def set_brand_voice_profile(self, profile: BrandVoiceProfile):
+        """ブランドボイスプロファイル設定"""
+        self.brand_voice_profile = profile
+    
+    def get_brand_voice_profile(self) -> Optional[BrandVoiceProfile]:
+        """ブランドボイスプロファイル取得"""
+        return self.brand_voice_profile
+    
+    def add_historical_article(self, article: ArticleContent):
+        """過去記事追加"""
+        self.historical_articles.append(article)
+        self._update_tone_patterns(article)
+        self._update_expression_patterns(article)
+    
+    def get_historical_articles_count(self) -> int:
+        """過去記事数取得"""
+        return len(self.historical_articles)
+    
+    def get_historical_articles(self) -> List[ArticleContent]:
+        """過去記事一覧取得"""
+        return self.historical_articles.copy()
+    
+    # ===== メイン分析機能 =====
+    
+    def analyze_tone_manner(self, article: ArticleContent) -> ToneMannerAnalysis:
+        """
+        記事のトンマナ分析
         
-    def generate_tone_variations(self, target_audience: str, content_purpose: str) -> List[Dict[str, Any]]:
-        """ターゲットオーディエンスとコンテンツ目的に応じたトーンバリエーションを生成"""
-        
-        variations = []
-        
-        for tone_type, template in self.tone_templates.items():
-            # ターゲットオーディエンスに応じた調整
-            adjusted_template = self._adjust_for_audience(template.copy(), target_audience)
+        Args:
+            article: 分析対象記事
             
-            # コンテンツ目的に応じた調整
-            adjusted_template = self._adjust_for_purpose(adjusted_template, content_purpose)
-            
-            # 適合度スコアを計算
-            suitability_score = self._calculate_suitability(
-                tone_type, target_audience, content_purpose
+        Returns:
+            ToneMannerAnalysis: 分析結果
+        """
+        if not article.content or not article.title:
+            return ToneMannerAnalysis(
+                article_id=article.id,
+                consistency_score=0.0,
+                target_tone_match=False,
+                formality_match=False,
+                style_match=False,
+                inconsistencies=[
+                    ToneInconsistency(
+                        inconsistency_type=InconsistencyType.EXPRESSION_INCONSISTENCY,
+                        severity="HIGH",
+                        description="コンテンツが空または不完全です",
+                        location="全体",
+                        suggested_fix="適切なコンテンツを提供してください",
+                        confidence_score=1.0
+                    )
+                ]
             )
-            adjusted_template["suitability_score"] = suitability_score
+        
+        inconsistencies = []
+        
+        # 過去記事との比較分析
+        if self.historical_articles:
+            tone_consistency = self._analyze_tone_consistency(article)
+            formality_consistency = self._analyze_formality_consistency(article)
+            style_consistency = self._analyze_style_consistency(article)
             
-            variations.append(adjusted_template)
-        
-        # 適合度でソート
-        variations.sort(key=lambda x: x["suitability_score"], reverse=True)
-        
-        return variations
-    
-    def customize_for_flower_content(self, base_tone: str, flower_context: Dict[str, Any]) -> Dict[str, Any]:
-        """誕生花コンテンツ用のトーンカスタマイズ"""
-        
-        base_template = self.tone_templates.get(base_tone, self.tone_templates["friendly_casual"])
-        customized = base_template.copy()
-        
-        flowers = flower_context.get("flowers", [])
-        occasion = flower_context.get("occasion", "")
-        emotion = flower_context.get("emotion", "")
-        
-        # 花特有の言語表現を追加
-        flower_language = []
-        for flower in flowers:
-            flower_language.extend(self._get_flower_specific_expressions(flower))
-        
-        # 感情表現を追加
-        emotional_expressions = self._get_emotional_expressions_for_context(emotion, occasion)
-        
-        # 季節への言及を追加
-        seasonal_references = self._get_seasonal_references(flowers)
-        
-        # 禁止表現を定義
-        prohibited_expressions = self._define_prohibited_expressions()
-        
-        customized.update({
-            "flower_specific_language": flower_language,
-            "emotional_expressions": emotional_expressions,
-            "seasonal_references": seasonal_references,
-            "禁止表現": prohibited_expressions,
-            "flower_context": flower_context
-        })
-        
-        return customized
-    
-    def generate_brand_voice_guidelines(self, brand_characteristics: Dict[str, Any]) -> Dict[str, Any]:
-        """ブランドボイスガイドラインを生成"""
-        
-        brand_personality = brand_characteristics.get("brand_personality", "")
-        target_relationship = brand_characteristics.get("target_relationship", "")
-        expertise_level = brand_characteristics.get("expertise_level", "")
-        
-        # ブランドの属性を分析
-        voice_attributes = self._extract_voice_attributes(brand_personality)
-        
-        # 推奨フレーズと禁止フレーズを生成
-        do_phrases = self._generate_do_phrases(voice_attributes, target_relationship)
-        dont_phrases = self._generate_dont_phrases(voice_attributes)
-        
-        # 一貫性ルール
-        consistency_rules = self._create_consistency_rules(expertise_level, target_relationship)
-        
-        return {
-            "voice_attributes": voice_attributes,
-            "do_phrases": do_phrases,
-            "dont_phrases": dont_phrases,
-            "consistency_rules": consistency_rules,
-            "tone_examples": self._generate_tone_examples(voice_attributes),
-            "brand_characteristics": brand_characteristics
-        }
-    
-    def _adjust_for_audience(self, template: Dict[str, Any], audience: str) -> Dict[str, Any]:
-        """オーディエンスに応じた調整"""
-        
-        if "30代女性" in audience and "プレゼント" in audience:
-            # プレゼント購入検討中の30代女性向け調整
-            template["sample_phrases"].extend([
-                "同じくらいの年代の女性として",
-                "実際に選んでみた経験から",
-                "私も悩んだのですが",
-                "きっと気に入ってもらえると思います"
-            ])
-            template["writing_guidelines"].append("共感と実体験を重視")
-        
-        return template
-    
-    def _adjust_for_purpose(self, template: Dict[str, Any], purpose: str) -> Dict[str, Any]:
-        """コンテンツ目的に応じた調整"""
-        
-        if "誕生花選び" in purpose:
-            template["sample_phrases"].extend([
-                "誕生花を選ぶ際のポイントは",
-                "花言葉を知ることで",
-                "その人らしい花を",
-                "特別な意味を込めて"
-            ])
-            template["writing_guidelines"].append("花選びの実用性を重視")
-        
-        return template
-    
-    def _calculate_suitability(self, tone_type: str, audience: str, purpose: str) -> float:
-        """適合度スコアを計算"""
-        
-        base_score = 50
-        
-        # オーディエンス適合度
-        if "プレゼント購入" in audience:
-            if tone_type == "professional_helpful":
-                base_score += 20
-            elif tone_type == "warm_emotional":
-                base_score += 15
-        
-        if "30代女性" in audience:
-            if tone_type == "friendly_casual":
-                base_score += 15
-            elif tone_type == "warm_emotional":
-                base_score += 10
-        
-        # 目的適合度
-        if "誕生花選び" in purpose:
-            if tone_type == "professional_helpful":
-                base_score += 15
-            elif tone_type == "friendly_casual":
-                base_score += 10
-        
-        return min(100, max(0, base_score))
-    
-    def _get_flower_specific_expressions(self, flower: str) -> List[str]:
-        """花固有の表現を取得"""
-        
-        flower_expressions = {
-            "チューリップ": [
-                "色とりどりの",
-                "春の使者",
-                "可憐な佇まい",
-                "明るい印象"
-            ],
-            "バラ": [
-                "気品ある",
-                "永遠の美しさ",
-                "愛の象徴",
-                "華やかな魅力"
-            ],
-            "カーネーション": [
-                "優しい印象",
-                "母への愛",
-                "温かな気持ち",
-                "包容力のある"
-            ],
-            "スズラン": [
-                "可憐で上品",
-                "清楚な美しさ",
-                "繊細な魅力",
-                "初夏の訪れ"
-            ]
-        }
-        
-        return flower_expressions.get(flower, ["美しい", "魅力的な", "素敵な"])
-    
-    def _get_emotional_expressions_for_context(self, emotion: str, occasion: str) -> List[str]:
-        """文脈に応じた感情表現を取得"""
-        
-        expressions = []
-        
-        if "喜び" in emotion:
-            expressions.extend([
-                "心躍る", "嬉しくなる", "明るい気持ちに", "笑顔になれる"
-            ])
-        
-        if "新しい始まり" in emotion:
-            expressions.extend([
-                "希望に満ちた", "新たなスタート", "前向きな気持ち", "フレッシュな"
-            ])
-        
-        if "春" in occasion or "プレゼント" in occasion:
-            expressions.extend([
-                "心温まる", "特別な想い", "優しい気持ち", "感謝の気持ち"
-            ])
-        
-        return expressions
-    
-    def _get_seasonal_references(self, flowers: List[str]) -> List[str]:
-        """季節への言及を取得"""
-        
-        seasonal_refs = []
-        
-        # 花から季節を推定
-        spring_flowers = ["チューリップ", "スイートアリッサム", "スイートピー"]
-        summer_flowers = ["ヒマワリ", "ユリ"]
-        winter_flowers = ["ポインセチア", "カトレア"]
-        
-        for flower in flowers:
-            if flower in spring_flowers:
-                seasonal_refs.extend([
-                    "春の陽だまりのような",
-                    "新緑の季節にふさわしい",
-                    "桜の季節と同じく"
-                ])
-            elif flower in summer_flowers:
-                seasonal_refs.extend([
-                    "夏の太陽のような",
-                    "暑い季節に爽やかな",
-                    "青空に映える"
-                ])
-            elif flower in winter_flowers:
-                seasonal_refs.extend([
-                    "冬の華やかさを",
-                    "寒い季節に暖かさを",
-                    "年末年始にふさわしい"
-                ])
-        
-        if not seasonal_refs:
-            seasonal_refs = ["季節を彩る", "時期にぴったりの", "この時季ならではの"]
-        
-        return seasonal_refs
-    
-    def _define_prohibited_expressions(self) -> List[str]:
-        """禁止表現を定義"""
-        
-        return [
-            "絶対に",
-            "必ず",
-            "100%",
-            "確実に",
-            "間違いなく",
-            "誰でも",
-            "みんな",
-            "最高の",
-            "最安値",
-            "業界No.1"
-        ]
-    
-    def _extract_voice_attributes(self, personality: str) -> List[str]:
-        """ブランドパーソナリティから音声属性を抽出"""
-        
-        attributes = []
-        
-        if "温かい" in personality:
-            attributes.extend(["親しみやすい", "共感的", "支援的"])
-        
-        if "信頼できる" in personality:
-            attributes.extend(["正確", "客観的", "根拠のある"])
-        
-        if "専門的" in personality:
-            attributes.extend(["知識豊富", "権威的", "教育的"])
-        
-        return attributes
-    
-    def _generate_do_phrases(self, attributes: List[str], relationship: str) -> List[str]:
-        """推奨フレーズを生成"""
-        
-        do_phrases = []
-        
-        if "親しみやすい" in attributes:
-            do_phrases.extend([
-                "一緒に考えてみましょう",
-                "お手伝いさせていただきます",
-                "ご相談ください"
-            ])
-        
-        if "知識豊富" in attributes:
-            do_phrases.extend([
-                "専門的な観点から",
-                "経験に基づいて",
-                "詳しくご説明します"
-            ])
-        
-        if "友人のような" in relationship:
-            do_phrases.extend([
-                "実は〜なんです",
-                "個人的におすすめなのは",
-                "一緒に選んでみませんか"
-            ])
-        
-        return do_phrases
-    
-    def _generate_dont_phrases(self, attributes: List[str]) -> List[str]:
-        """禁止フレーズを生成"""
-        
-        dont_phrases = [
-            "買わないと損",
-            "今すぐ購入",
-            "限定価格",
-            "特別価格",
-            "他では手に入らない"
-        ]
-        
-        if "親しみやすい" in attributes:
-            dont_phrases.extend([
-                "申し上げます",
-                "恐縮ですが",
-                "失礼いたします"
-            ])
-        
-        return dont_phrases
-    
-    def _create_consistency_rules(self, expertise_level: str, relationship: str) -> List[str]:
-        """一貫性ルールを作成"""
-        
-        rules = [
-            "同じトーンを記事全体で維持する",
-            "読者との距離感を一定に保つ",
-            "専門用語の使用レベルを統一する"
-        ]
-        
-        if "中級者向け" in expertise_level:
-            rules.append("専門用語には簡潔な説明を付ける")
-        
-        if "友人のような" in relationship:
-            rules.append("親しみやすさと専門性のバランスを保つ")
-        
-        return rules
-    
-    def _generate_tone_examples(self, attributes: List[str]) -> Dict[str, str]:
-        """トーンの例文を生成"""
-        
-        examples = {}
-        
-        if "親しみやすい" in attributes:
-            examples["greeting"] = "こんにちは！今日は〜についてお話ししますね。"
-            examples["explanation"] = "実は、〜ということなんです。"
-            examples["closing"] = "いかがでしたでしょうか？何かご質問があればお気軽にどうぞ！"
-        
-        if "専門的" in attributes:
-            examples["greeting"] = "〜の専門家として、詳しくご説明いたします。"
-            examples["explanation"] = "専門的な観点から申し上げますと、〜"
-            examples["closing"] = "より詳しい情報が必要でしたら、お気軽にお問い合わせください。"
-        
-        return examples
-    
-    # ========================================
-    # Phase 5: 一貫性チェック機能
-    # ========================================
-    
-    def compare_with_past_articles(self, current_article: Dict[str, Any], past_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """過去記事とのトーン&マナー比較機能"""
-        if not current_article or not current_article.get("tone_profile"):
-            raise ValueError("Article with tone profile is required")
-        
-        current_tone = current_article["tone_profile"]
-        matching_articles = []
-        tone_variations = []
-        
-        for past_article in past_articles:
-            if not past_article.get("tone_profile"):
-                continue
-                
-            past_tone = past_article["tone_profile"]
-            similarity_score = self._calculate_tone_similarity(current_tone, past_tone)
+            # 不一致の検出
+            if tone_consistency < 0.7:
+                inconsistencies.append(ToneInconsistency(
+                    inconsistency_type=InconsistencyType.TONE_MISMATCH,
+                    severity="HIGH" if tone_consistency < 0.5 else "MEDIUM",
+                    description=f"過去記事とのトーン一致度が低い ({tone_consistency:.2f})",
+                    location="全体的な文体",
+                    suggested_fix="過去記事のトーンに合わせた表現に調整することを推奨",
+                    confidence_score=1.0 - tone_consistency
+                ))
             
-            if similarity_score > 0.7:  # 70%以上の類似度
-                matching_articles.append({
-                    "article_id": past_article["id"],
-                    "similarity_score": similarity_score
-                })
-            else:
-                tone_variations.append({
-                    "article_id": past_article["id"], 
-                    "variation_score": 1.0 - similarity_score,
-                    "differences": self._identify_tone_differences(current_tone, past_tone)
-                })
-        
-        overall_consistency = len(matching_articles) / len(past_articles) if past_articles else 1.0
-        
-        return {
-            "consistency_score": overall_consistency,
-            "matching_articles": matching_articles,
-            "tone_variations": tone_variations,
-            "recommendation": "consistent" if overall_consistency > 0.8 else "review_needed"
-        }
-    
-    def check_writing_consistency(self, article: Dict[str, Any]) -> Dict[str, Any]:
-        """文体・表現一貫性チェック機能"""
-        if not article or not article.get("content"):
-            raise ValueError("Article content is required")
-        
-        if not article.get("tone_profile"):
-            raise ValueError("Tone profile is required")
-        
-        content = article["content"]
-        tone_profile = article["tone_profile"]
-        
-        # 文体の一貫性をチェック
-        consistency_issues = []
-        
-        # 敬語レベルの一貫性
-        formality_issues = self._check_formality_consistency_internal(content, tone_profile)
-        consistency_issues.extend(formality_issues)
-        
-        # 禁止表現のチェック
-        prohibited_issues = self._check_prohibited_expressions_internal(content, tone_profile)
-        consistency_issues.extend(prohibited_issues)
-        
-        # トーンドリフトのチェック  
-        drift_issues = self._check_tone_drift_internal(content, tone_profile)
-        consistency_issues.extend(drift_issues)
-        
-        # 一貫性スコアを計算
-        consistency_score = max(0.0, 1.0 - (len(consistency_issues) * 0.1))
-        is_consistent = consistency_score >= 0.8
-        
-        return {
-            "is_consistent": is_consistent,
-            "consistency_score": consistency_score,
-            "consistency_issues": consistency_issues,
-            "total_issues": len(consistency_issues)
-        }
-    
-    def evaluate_brand_voice_compatibility(self, article: Dict[str, Any], brand_guidelines: Dict[str, Any]) -> Dict[str, Any]:
-        """ブランドボイス適合性評価システム"""
-        if not article or not article.get("content"):
-            raise ValueError("Article content is required")
-        
-        if not brand_guidelines:
-            raise ValueError("Brand guidelines are required")
-        
-        content = article["content"]
-        compliance_issues = []
-        
-        # DO/DON'T フレーズのチェック
-        dont_phrases = brand_guidelines.get("dont_phrases", [])
-        prohibited_violations = self.detect_prohibited_expressions(content, dont_phrases)
-        
-        if prohibited_violations["violations_found"]:
-            compliance_issues.extend(prohibited_violations["violation_details"])
-        
-        # ブランド属性との整合性チェック
-        voice_attributes = brand_guidelines.get("voice_attributes", [])
-        attribute_alignment = self._check_attribute_alignment(content, voice_attributes)
-        
-        # 適合性スコアを計算
-        compatibility_score = max(0.0, 1.0 - (len(compliance_issues) * 0.15))
-        
-        return {
-            "compatibility_score": compatibility_score,
-            "compliance_issues": compliance_issues,
-            "brand_alignment": attribute_alignment,
-            "overall_status": "compliant" if compatibility_score > 0.8 else "needs_review"
-        }
-    
-    def detect_prohibited_expressions(self, content: str, prohibited_list: List[str]) -> Dict[str, Any]:
-        """禁止表現の検出"""
-        if not content:
-            return {"violations_found": False, "violation_details": []}
-        
-        violations = []
-        
-        for prohibited in prohibited_list:
-            # 大文字小文字を区別しない検索
-            pattern = re.compile(re.escape(prohibited), re.IGNORECASE)
-            matches = pattern.finditer(content)
+            if formality_consistency < 0.7:
+                inconsistencies.append(ToneInconsistency(
+                    inconsistency_type=InconsistencyType.FORMALITY_MISMATCH,
+                    severity="HIGH" if formality_consistency < 0.5 else "MEDIUM",
+                    description=f"過去記事との敬語レベル一致度が低い ({formality_consistency:.2f})",
+                    location="敬語表現",
+                    suggested_fix="一貫した敬語レベルに調整することを推奨",
+                    confidence_score=1.0 - formality_consistency
+                ))
             
-            for match in matches:
-                violations.append({
-                    "expression": prohibited,
-                    "found_text": match.group(),
-                    "position": match.start(),
-                    "context": content[max(0, match.start()-20):match.end()+20]
-                })
+            if style_consistency < 0.7:
+                inconsistencies.append(ToneInconsistency(
+                    inconsistency_type=InconsistencyType.WRITING_STYLE_MISMATCH,
+                    severity="MEDIUM",
+                    description=f"過去記事との文体一致度が低い ({style_consistency:.2f})",
+                    location="文章構造",
+                    suggested_fix="統一された文体スタイルに調整することを推奨",
+                    confidence_score=1.0 - style_consistency
+                ))
+            
+            overall_consistency = (tone_consistency + formality_consistency + style_consistency) / 3
+        else:
+            # 過去記事がない場合のデフォルト処理
+            overall_consistency = 0.8  # 中程度の評価
+            tone_consistency = formality_consistency = style_consistency = 0.8
         
-        return {
-            "violations_found": len(violations) > 0,
-            "violation_details": violations,
-            "violation_count": len(violations)
-        }
+        # ブランドボイス適合性チェック
+        brand_compliance = None
+        if self.brand_voice_profile:
+            brand_compliance = self._evaluate_brand_voice_compliance(article)
+            
+            if brand_compliance < 0.7:
+                inconsistencies.append(ToneInconsistency(
+                    inconsistency_type=InconsistencyType.BRAND_VOICE_VIOLATION,
+                    severity="HIGH" if brand_compliance < 0.5 else "MEDIUM",
+                    description=f"ブランドボイス適合度が低い ({brand_compliance:.2f})",
+                    location="全体的な表現",
+                    suggested_fix="ブランドガイドラインに沿った表現に調整",
+                    confidence_score=1.0 - brand_compliance
+                ))
+        
+        return ToneMannerAnalysis(
+            article_id=article.id,
+            consistency_score=overall_consistency,
+            target_tone_match=tone_consistency >= 0.7,
+            formality_match=formality_consistency >= 0.7,
+            style_match=style_consistency >= 0.7,
+            inconsistencies=inconsistencies,
+            brand_voice_compliance=brand_compliance,
+            recommendations_summary=self._generate_recommendations_summary(inconsistencies)
+        )
     
-    def detect_tone_drift(self, article: Dict[str, Any]) -> Dict[str, Any]:
-        """記事内でのトーンの変化（ドリフト）検出"""
-        if not article or not article.get("content"):
-            raise ValueError("Article content is required")
+    def analyze_expression_patterns(self) -> Dict[str, Any]:
+        """
+        表現パターン分析
         
-        content = article["content"]
-        
-        # 段落に分割
-        paragraphs = [p.strip() for p in content.split('\n') if p.strip()]
-        
-        if len(paragraphs) < 2:
+        Returns:
+            Dict: 表現パターン分析結果
+        """
+        if not self.historical_articles:
             return {
-                "has_tone_drift": False,
-                "drift_locations": [],
-                "severity_score": 0.0
+                "common_expressions": [],
+                "sentence_patterns": [],
+                "emotional_words": []
             }
         
-        drift_locations = []
+        all_content = " ".join([article.content for article in self.historical_articles])
         
-        # 隣接する段落間でトーンの変化をチェック
-        for i in range(len(paragraphs) - 1):
-            current_para = paragraphs[i]
-            next_para = paragraphs[i + 1]
-            
-            # 簡単なトーン変化検出（敬語レベルの変化）
-            current_formality = self._calculate_formality_score(current_para)
-            next_formality = self._calculate_formality_score(next_para)
-            
-            formality_diff = abs(current_formality - next_formality)
-            
-            if formality_diff > 0.3:  # 30%以上の変化
-                drift_locations.append({
-                    "paragraph_index": i,
-                    "drift_type": "formality_change",
-                    "severity": formality_diff,
-                    "description": f"段落{i+1}から{i+2}で敬語レベルが大きく変化"
-                })
+        # 共通表現の抽出
+        common_expressions = self._extract_common_expressions(all_content)
         
-        has_drift = len(drift_locations) > 0
-        severity_score = max([loc["severity"] for loc in drift_locations]) if drift_locations else 0.0
+        # 文パターンの分析
+        sentence_patterns = self._analyze_sentence_patterns(all_content)
+        
+        # 感情語の分析
+        emotional_words = self._extract_emotional_words(all_content)
         
         return {
-            "has_tone_drift": has_drift,
-            "drift_locations": drift_locations,
-            "severity_score": severity_score
+            "common_expressions": common_expressions,
+            "sentence_patterns": sentence_patterns,
+            "emotional_words": emotional_words,
+            "analysis_date": datetime.now().isoformat()
         }
     
-    def check_formality_consistency(self, article: Dict[str, Any]) -> Dict[str, Any]:
-        """敬語・丁寧語レベルの一貫性チェック"""
-        if not article or not article.get("content"):
-            raise ValueError("Article content is required")
+    def analyze_sentence_structure(self, text: str) -> Dict[str, Any]:
+        """
+        文構造分析
         
-        content = article["content"]
-        expected_level = article.get("tone_profile", {}).get("formality_level", "やや丁寧")
-        
-        # 文章を文単位に分割
-        sentences = re.split(r'[。！？]', content)
-        sentences = [s.strip() for s in sentences if s.strip()]
-        
-        formality_scores = []
-        inconsistent_patterns = []
-        
-        for i, sentence in enumerate(sentences):
-            score = self._calculate_formality_score(sentence)
-            formality_scores.append(score)
+        Args:
+            text: 分析対象テキスト
             
-            # 期待値との差をチェック
-            expected_score = self._get_expected_formality_score(expected_level)
-            if abs(score - expected_score) > 0.3:
-                inconsistent_patterns.append({
-                    "sentence_index": i,
-                    "sentence": sentence,
-                    "actual_score": score,
-                    "expected_score": expected_score
-                })
+        Returns:
+            Dict: 文構造分析結果
+        """
+        sentences = self._split_sentences(text)
         
-        overall_score = 1.0 - (len(inconsistent_patterns) / len(sentences)) if sentences else 1.0
+        if not sentences:
+            return {
+                "sentence_count": 0,
+                "average_sentence_length": 0,
+                "sentence_length_variance": 0
+            }
+        
+        sentence_lengths = [len(sentence) for sentence in sentences]
         
         return {
-            "formality_score": overall_score,
-            "inconsistent_patterns": inconsistent_patterns,
-            "recommended_level": expected_level,
-            "average_formality": sum(formality_scores) / len(formality_scores) if formality_scores else 0.0
+            "sentence_count": len(sentences),
+            "average_sentence_length": statistics.mean(sentence_lengths),
+            "sentence_length_variance": statistics.variance(sentence_lengths) if len(sentence_lengths) > 1 else 0,
+            "shortest_sentence": min(sentence_lengths),
+            "longest_sentence": max(sentence_lengths)
         }
     
-    def analyze_emotional_tone(self, article: Dict[str, Any]) -> Dict[str, Any]:
-        """感情トーンの分析と一貫性チェック"""
-        if not article or not article.get("content"):
-            raise ValueError("Article content is required")
+    # ===== ブランドボイス評価機能 =====
+    
+    def evaluate_brand_voice_compliance(self, article: ArticleContent) -> Dict[str, float]:
+        """
+        ブランドボイス適合性評価
         
-        content = article["content"]
+        Args:
+            article: 評価対象記事
+            
+        Returns:
+            Dict: 適合性評価結果
+        """
+        if not self.brand_voice_profile:
+            return {
+                "overall_compliance_score": 0.5,
+                "tone_compliance": 0.5,
+                "formality_compliance": 0.5,
+                "keyword_compliance": 0.5
+            }
         
-        # 感情キーワードの定義
-        emotion_keywords = {
-            "positive": ["美しい", "素晴らしい", "魅力的", "喜び", "幸せ", "嬉しい"],
-            "neutral": ["です", "ます", "について", "として", "により"],
-            "warm": ["温かい", "優しい", "心地よい", "癒し", "安らぎ"],
-            "professional": ["専門的", "確実", "正確", "適切", "効果的"]
-        }
+        # トーン適合性
+        tone_compliance = self._evaluate_tone_compliance(article)
         
-        emotion_scores = {}
-        total_words = 0
+        # 敬語レベル適合性
+        formality_compliance = self._evaluate_formality_compliance(article)
         
-        for emotion, keywords in emotion_keywords.items():
-            count = 0
-            for keyword in keywords:
-                count += content.count(keyword)
-            emotion_scores[emotion] = count
-            total_words += count
+        # キーワード適合性
+        keyword_compliance = self._evaluate_keyword_compliance(article)
         
-        # 感情分布を正規化
-        emotion_distribution = {}
-        if total_words > 0:
-            for emotion, count in emotion_scores.items():
-                emotion_distribution[emotion] = count / total_words
-        
-        # 主要感情を特定
-        dominant_emotion = max(emotion_distribution.items(), key=lambda x: x[1])[0] if emotion_distribution else "neutral"
-        
-        # 一貫性を計算（最大値と最小値の差が小さいほど一貫）
-        if emotion_distribution:
-            max_score = max(emotion_distribution.values())
-            min_score = min(emotion_distribution.values())
-            emotion_consistency = 1.0 - (max_score - min_score)
-        else:
-            emotion_consistency = 1.0
+        # 総合適合性
+        overall_compliance = (tone_compliance + formality_compliance + keyword_compliance) / 3
         
         return {
-            "dominant_emotion": dominant_emotion,
-            "emotion_consistency": emotion_consistency,
-            "emotion_distribution": emotion_distribution,
-            "total_emotional_words": total_words
+            "overall_compliance_score": overall_compliance,
+            "tone_compliance": tone_compliance,
+            "formality_compliance": formality_compliance,
+            "keyword_compliance": keyword_compliance
         }
     
-    def check_audience_alignment(self, article: Dict[str, Any]) -> Dict[str, Any]:
-        """読者層との適合性チェック"""
-        if not article or not article.get("tone_profile"):
-            raise ValueError("Article with tone profile is required")
+    def analyze_brand_keyword_usage(self, content: str) -> Dict[str, Any]:
+        """
+        ブランドキーワード使用分析
         
-        tone_profile = article["tone_profile"]
-        target_audience = tone_profile.get("target_audience", "")
-        content = article.get("content", "")
-        
-        misalignment_issues = []
-        alignment_score = 1.0
-        
-        # 読者層別のチェック
-        if "30代女性" in target_audience:
-            # 30代女性向けのチェック
-            if "申し上げます" in content or "ご説明いたします" in content:
-                misalignment_issues.append({
-                    "issue": "過度に丁寧な表現",
-                    "description": "30代女性には親しみやすいトーンの方が適切"
-                })
-                alignment_score -= 0.2
-        
-        if "プレゼント購入" in target_audience:
-            # プレゼント購入検討者向けのチェック
-            practical_words = ["選ぶ", "おすすめ", "ポイント", "注意"]
-            practical_count = sum(content.count(word) for word in practical_words)
+        Args:
+            content: 分析対象コンテンツ
             
-            if practical_count < 2:
-                misalignment_issues.append({
-                    "issue": "実用性の不足",
-                    "description": "プレゼント選びの実用的な情報が不足"
-                })
-                alignment_score -= 0.3
+        Returns:
+            Dict: キーワード使用分析結果
+        """
+        if not self.brand_voice_profile:
+            return {
+                "used_brand_keywords": [],
+                "avoided_keywords_found": [],
+                "keyword_usage_score": 0.0
+            }
         
+        content_lower = content.lower()
+        
+        # ブランドキーワードの使用チェック
+        used_brand_keywords = [
+            keyword for keyword in self.brand_voice_profile.brand_keywords
+            if keyword.lower() in content_lower
+        ]
+        
+        # 避けるべきキーワードのチェック
+        avoided_keywords_found = [
+            keyword for keyword in self.brand_voice_profile.avoid_keywords
+            if keyword.lower() in content_lower
+        ]
+        
+        # スコア計算
+        brand_keyword_score = len(used_brand_keywords) / max(len(self.brand_voice_profile.brand_keywords), 1)
+        avoid_penalty = len(avoided_keywords_found) * 0.2
+        keyword_usage_score = max(0, brand_keyword_score - avoid_penalty)
+        
+        return {
+            "used_brand_keywords": used_brand_keywords,
+            "avoided_keywords_found": avoided_keywords_found,
+            "keyword_usage_score": keyword_usage_score,
+            "brand_keyword_ratio": brand_keyword_score
+        }
+    
+    # ===== 修正提案生成機能 =====
+    
+    def generate_tone_recommendations(self, article: ArticleContent) -> List[ToneRecommendation]:
+        """
+        トンマナ修正提案生成
+        
+        Args:
+            article: 修正対象記事
+            
+        Returns:
+            List[ToneRecommendation]: 修正提案リスト
+        """
         recommendations = []
-        if misalignment_issues:
-            recommendations.append("読者層により適したトーンへの調整")
-            recommendations.append("実用的な情報の追加")
         
-        return {
-            "alignment_score": max(0.0, alignment_score),
-            "misalignment_issues": misalignment_issues,
-            "recommendations": recommendations,
-            "target_audience": target_audience
-        }
-    
-    def generate_improvement_suggestions(self, article: Dict[str, Any], brand_guidelines: Dict[str, Any]) -> Dict[str, Any]:
-        """改善提案生成機能"""
-        if not article or not article.get("content"):
-            raise ValueError("Article content is required")
+        analysis = self.analyze_tone_manner(article)
         
-        content = article["content"]
-        priority_issues = []
-        specific_recommendations = []
-        revised_sentences = []
-        
-        # 一貫性チェック結果を取得
-        consistency_result = self.check_writing_consistency(article)
-        
-        # ブランド適合性チェック結果を取得
-        if brand_guidelines:
-            brand_result = self.evaluate_brand_voice_compatibility(article, brand_guidelines)
+        for inconsistency in analysis.inconsistencies:
+            if inconsistency.inconsistency_type == InconsistencyType.FORMALITY_MISMATCH:
+                formal_recs = self._generate_formality_recommendations(article.content)
+                recommendations.extend(formal_recs)
             
-            if brand_result["compatibility_score"] < 0.8:
-                priority_issues.append({
-                    "type": "brand_compliance",
-                    "severity": "high",
-                    "description": "ブランドガイドラインとの整合性が不足"
-                })
+            elif inconsistency.inconsistency_type == InconsistencyType.TONE_MISMATCH:
+                tone_recs = self._generate_tone_adjustment_recommendations(article.content)
+                recommendations.extend(tone_recs)
+            
+            elif inconsistency.inconsistency_type == InconsistencyType.BRAND_VOICE_VIOLATION:
+                brand_recs = self._generate_brand_alignment_recommendations(article.content)
+                recommendations.extend(brand_recs)
         
-        # 具体的な改善提案を生成
-        if not consistency_result["is_consistent"]:
-            priority_issues.append({
-                "type": "consistency",
-                "severity": "high",
-                "description": "文体の一貫性に問題があります"
+        return recommendations[:5]  # 上位5つの提案を返す
+    
+    def suggest_formality_adjustments(self, text: str) -> List[str]:
+        """
+        敬語調整提案
+        
+        Args:
+            text: 調整対象テキスト
+            
+        Returns:
+            List[str]: 調整提案リスト
+        """
+        suggestions = []
+        
+        # 過度にフォーマルな表現をカジュアル化
+        casual_text = text
+        for formal_pattern, casual_replacement in self._formality_patterns["formal_to_casual"].items():
+            if formal_pattern in text:
+                casual_text = casual_text.replace(formal_pattern, casual_replacement)
+        
+        if casual_text != text:
+            suggestions.append(casual_text)
+        
+        # その他の調整パターン
+        if "申し上げます" in text:
+            suggestions.append(text.replace("申し上げます", "します"))
+        
+        if "いたします" in text:
+            suggestions.append(text.replace("いたします", "します"))
+        
+        return suggestions[:3]
+    
+    def suggest_expression_modernization(self, text: str) -> List[str]:
+        """
+        表現モダン化提案
+        
+        Args:
+            text: モダン化対象テキスト
+            
+        Returns:
+            List[str]: モダン化提案リスト
+        """
+        suggestions = []
+        modern_text = text
+        
+        for old_expr, modern_expr in self._expression_modernization_map.items():
+            if old_expr in text:
+                modern_text = modern_text.replace(old_expr, modern_expr)
+        
+        if modern_text != text:
+            suggestions.append(modern_text)
+        
+        return suggestions
+    
+    def suggest_audience_alignment(self, text: str) -> List[str]:
+        """
+        ターゲット読者向け調整提案
+        
+        Args:
+            text: 調整対象テキスト
+            
+        Returns:
+            List[str]: 調整提案リスト
+        """
+        suggestions = []
+        
+        # 専門用語の一般化
+        accessible_text = text
+        
+        technical_terms = {
+            "学名": "正式な名前（学名",
+            "精油成分": "香りの成分",
+            "ゲラニオール": "バラのような香り成分",
+            "ネロール": "柑橘系の香り成分"
+        }
+        
+        for technical, accessible in technical_terms.items():
+            if technical in text:
+                accessible_text = accessible_text.replace(technical, accessible)
+        
+        if accessible_text != text:
+            suggestions.append(accessible_text)
+        
+        return suggestions
+    
+    # ===== 高度な分析機能 =====
+    
+    def generate_consistency_report(self, articles: List[ArticleContent]) -> ConsistencyReport:
+        """
+        一貫性レポート生成
+        
+        Args:
+            articles: 分析対象記事リスト
+            
+        Returns:
+            ConsistencyReport: 一貫性レポート
+        """
+        article_analyses = []
+        all_inconsistencies = []
+        
+        for article in articles:
+            analysis = self.analyze_tone_manner(article)
+            article_analyses.append(analysis)
+            all_inconsistencies.extend([inc.inconsistency_type for inc in analysis.inconsistencies])
+        
+        # 全体的な一貫性スコア
+        overall_score = statistics.mean([analysis.consistency_score for analysis in article_analyses]) if article_analyses else 0.0
+        
+        # よくある不一致パターン
+        common_inconsistencies = [
+            inconsistency for inconsistency, count in Counter(all_inconsistencies).most_common(5)
+        ]
+        
+        # トーン変化トレンド
+        tone_trend = self._analyze_tone_evolution_trend(articles)
+        
+        # 全体的な推奨事項
+        overall_recommendations = self._generate_overall_recommendations(article_analyses)
+        
+        return ConsistencyReport(
+            overall_consistency_score=overall_score,
+            article_analyses=article_analyses,
+            common_inconsistencies=common_inconsistencies,
+            tone_evolution_trend=tone_trend,
+            recommendations=overall_recommendations
+        )
+    
+    def track_tone_evolution(self) -> Dict[str, Any]:
+        """
+        トンマナ変化追跡
+        
+        Returns:
+            Dict: トーン変化分析結果
+        """
+        if len(self.historical_articles) < 2:
+            return {
+                "tone_trends": [],
+                "formality_trends": [],
+                "style_changes": []
+            }
+        
+        # 時系列でソート
+        sorted_articles = sorted(self.historical_articles, key=lambda x: x.created_at)
+        
+        tone_trends = []
+        formality_trends = []
+        
+        for article in sorted_articles:
+            tone_trends.append({
+                "date": article.created_at.isoformat(),
+                "tone": article.tone_manner.tone,
+                "formality": article.tone_manner.formality
             })
+        
+        return {
+            "tone_trends": tone_trends,
+            "formality_trends": formality_trends,
+            "style_changes": self._detect_style_changes(sorted_articles)
+        }
+    
+    def analyze_batch_tone_manner(self, articles: List[ArticleContent]) -> List[ToneMannerAnalysis]:
+        """
+        バッチトンマナ分析
+        
+        Args:
+            articles: 分析対象記事リスト
             
-            specific_recommendations.extend([
-                "記事全体で同一の敬語レベルを維持してください",
-                "禁止表現を適切な表現に置き換えてください",
-                "読者との距離感を一定に保ってください"
-            ])
-        
-        # 文章の改善例を提案
-        sentences = re.split(r'[。！？]', content)
-        for sentence in sentences[:3]:  # 最初の3文のみ
-            if sentence.strip():
-                improved = self._suggest_sentence_improvement(sentence.strip(), brand_guidelines)
-                if improved != sentence.strip():
-                    revised_sentences.append({
-                        "original": sentence.strip(),
-                        "improved": improved,
-                        "reason": "トーンの改善"
-                    })
-        
-        return {
-            "priority_issues": priority_issues,
-            "specific_recommendations": specific_recommendations,
-            "revised_sentences": revised_sentences,
-            "improvement_score": 1.0 - len(priority_issues) * 0.2
-        }
+        Returns:
+            List[ToneMannerAnalysis]: 分析結果リスト
+        """
+        return [self.analyze_tone_manner(article) for article in articles]
     
-    def analyze_bulk_consistency(self, articles: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """複数記事の一括一貫性分析"""
-        if not articles:
-            raise ValueError("Articles list is required")
-        
-        article_scores = []
-        all_issues = []
-        
-        for i, article in enumerate(articles):
-            try:
-                consistency_result = self.check_writing_consistency(article)
-                
-                article_scores.append({
-                    "article_id": article.get("id", f"article_{i}"),
-                    "consistency_score": consistency_result["consistency_score"],
-                    "is_consistent": consistency_result["is_consistent"],
-                    "issue_count": len(consistency_result["consistency_issues"])
-                })
-                
-                all_issues.extend(consistency_result["consistency_issues"])
-                
-            except Exception as e:
-                logger.warning(f"Failed to analyze article {i}: {e}")
-                article_scores.append({
-                    "article_id": article.get("id", f"article_{i}"),
-                    "consistency_score": 0.0,
-                    "is_consistent": False,
-                    "error": str(e)
-                })
-        
-        # 全体の一貫性を計算
-        valid_scores = [score["consistency_score"] for score in article_scores if "error" not in score]
-        overall_consistency = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
-        
-        # 共通の問題を特定
-        issue_types = [issue.get("type", "unknown") for issue in all_issues]
-        common_issues = [item for item, count in Counter(issue_types).most_common(3)]
-        
-        return {
-            "overall_consistency": overall_consistency,
-            "article_scores": article_scores,
-            "common_issues": common_issues,
-            "total_articles": len(articles),
-            "consistent_articles": sum(1 for score in article_scores if score.get("is_consistent", False))
-        }
+    # ===== プライベートメソッド =====
     
-    # ========================================
-    # ヘルパーメソッド
-    # ========================================
+    def _analyze_tone_consistency(self, article: ArticleContent) -> float:
+        """トーン一貫性分析"""
+        if not self.historical_articles:
+            return 0.8
+        
+        target_tone = article.tone_manner.tone
+        historical_tones = [a.tone_manner.tone for a in self.historical_articles]
+        
+        # 最も一般的なトーンとの一致度
+        most_common_tone = Counter(historical_tones).most_common(1)[0][0]
+        
+        return 1.0 if target_tone == most_common_tone else 0.4
     
-    def _calculate_tone_similarity(self, tone1: Dict[str, Any], tone2: Dict[str, Any]) -> float:
-        """トーン間の類似度を計算"""
-        similarity_score = 0.0
-        total_factors = 0
+    def _analyze_formality_consistency(self, article: ArticleContent) -> float:
+        """敬語レベル一貫性分析"""
+        if not self.historical_articles:
+            return 0.8
         
-        # 基本的な属性の比較
-        comparable_keys = ["writing_style", "formality_level", "emotional_tone"]
+        target_formality = article.tone_manner.formality
+        historical_formalities = [a.tone_manner.formality for a in self.historical_articles]
         
-        for key in comparable_keys:
-            if key in tone1 and key in tone2:
-                if tone1[key] == tone2[key]:
-                    similarity_score += 1.0
-                total_factors += 1
+        most_common_formality = Counter(historical_formalities).most_common(1)[0][0]
         
-        return similarity_score / total_factors if total_factors > 0 else 0.0
+        return 1.0 if target_formality == most_common_formality else 0.4
     
-    def _identify_tone_differences(self, tone1: Dict[str, Any], tone2: Dict[str, Any]) -> List[str]:
-        """トーン間の差異を特定"""
-        differences = []
+    def _analyze_style_consistency(self, article: ArticleContent) -> float:
+        """文体一貫性分析"""
+        if not self.historical_articles:
+            return 0.8
         
-        comparable_keys = ["writing_style", "formality_level", "emotional_tone"]
+        target_style = article.tone_manner.writing_style
+        historical_styles = [a.tone_manner.writing_style for a in self.historical_articles]
         
-        for key in comparable_keys:
-            if key in tone1 and key in tone2 and tone1[key] != tone2[key]:
-                differences.append(f"{key}: {tone1[key]} vs {tone2[key]}")
+        most_common_style = Counter(historical_styles).most_common(1)[0][0]
         
-        return differences
+        return 1.0 if target_style == most_common_style else 0.6
     
-    def _check_formality_consistency_internal(self, content: str, tone_profile: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """内部用：敬語レベルの一貫性チェック"""
-        issues = []
+    def _evaluate_brand_voice_compliance(self, article: ArticleContent) -> float:
+        """ブランドボイス適合性評価"""
+        if not self.brand_voice_profile:
+            return 0.5
         
-        # 敬語表現のパターン
-        formal_patterns = ["いたします", "申し上げます", "ございます"]
-        casual_patterns = ["です", "ます", "～ですよね"]
-        
-        formal_count = sum(content.count(pattern) for pattern in formal_patterns)
-        casual_count = sum(content.count(pattern) for pattern in casual_patterns)
-        
-        expected_level = tone_profile.get("formality_level", "やや丁寧")
-        
-        if expected_level == "やや丁寧" and formal_count > casual_count:
-            issues.append({
-                "type": "formality_mismatch",
-                "description": "過度に丁寧な表現が多用されています",
-                "severity": "medium"
-            })
-        
-        return issues
+        compliance_report = self.evaluate_brand_voice_compliance(article)
+        return compliance_report["overall_compliance_score"]
     
-    def _check_prohibited_expressions_internal(self, content: str, tone_profile: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """内部用：禁止表現のチェック"""
-        issues = []
+    def _evaluate_tone_compliance(self, article: ArticleContent) -> float:
+        """トーン適合性評価"""
+        if not self.brand_voice_profile:
+            return 0.5
         
-        prohibited = tone_profile.get("prohibited_expressions", [])
+        article_tone = article.tone_manner.tone
+        preferred_tone = self.brand_voice_profile.preferred_tone.value
         
-        for expr in prohibited:
-            if expr in content:
-                issues.append({
-                    "type": "prohibited_expression",
-                    "description": f"禁止表現「{expr}」が使用されています",
-                    "severity": "high"
-                })
-        
-        return issues
+        return 1.0 if article_tone == preferred_tone else 0.3
     
-    def _check_tone_drift_internal(self, content: str, tone_profile: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """内部用：トーンドリフトのチェック"""
-        issues = []
+    def _evaluate_formality_compliance(self, article: ArticleContent) -> float:
+        """敬語レベル適合性評価"""
+        if not self.brand_voice_profile:
+            return 0.5
         
-        drift_result = self.detect_tone_drift({"content": content})
+        article_formality = article.tone_manner.formality
+        preferred_formality = self.brand_voice_profile.preferred_formality.value
         
-        if drift_result["has_tone_drift"]:
-            for drift in drift_result["drift_locations"]:
-                issues.append({
-                    "type": "tone_drift",
-                    "description": drift["description"],
-                    "severity": "medium" if drift["severity"] < 0.5 else "high"
-                })
-        
-        return issues
+        return 1.0 if article_formality == preferred_formality else 0.3
     
-    def _check_attribute_alignment(self, content: str, voice_attributes: List[str]) -> Dict[str, Any]:
-        """ブランド属性との整合性チェック"""
-        alignment_score = 1.0
+    def _evaluate_keyword_compliance(self, article: ArticleContent) -> float:
+        """キーワード適合性評価"""
+        if not self.brand_voice_profile:
+            return 0.5
         
-        # 属性別のキーワードチェック
-        attribute_indicators = {
-            "親しみやすい": ["一緒に", "おすすめ", "ですよね", "実は"],
-            "知識豊富": ["専門的", "経験", "データ", "研究"],
-            "共感的": ["お気持ち", "理解", "共感", "寄り添う"]
-        }
-        
-        for attr in voice_attributes:
-            if attr in attribute_indicators:
-                indicators = attribute_indicators[attr]
-                found_indicators = sum(content.count(indicator) for indicator in indicators)
-                
-                if found_indicators == 0:
-                    alignment_score -= 0.2
-        
-        return {
-            "alignment_score": max(0.0, alignment_score),
-            "missing_attributes": [attr for attr in voice_attributes if attr in attribute_indicators]
-        }
+        keyword_analysis = self.analyze_brand_keyword_usage(article.content)
+        return keyword_analysis["keyword_usage_score"]
     
-    def _calculate_formality_score(self, text: str) -> float:
-        """文章の敬語レベルスコアを計算"""
-        formal_indicators = ["いたします", "申し上げます", "ございます", "していただく"]
-        casual_indicators = ["です", "ます", "ですね", "ですよ"]
+    def _generate_recommendations_summary(self, inconsistencies: List[ToneInconsistency]) -> str:
+        """推奨事項サマリー生成"""
+        if not inconsistencies:
+            return "トンマナは一貫しています"
         
-        formal_count = sum(text.count(indicator) for indicator in formal_indicators)
-        casual_count = sum(text.count(indicator) for indicator in casual_indicators)
+        high_priority = len([inc for inc in inconsistencies if inc.severity == "HIGH"])
+        medium_priority = len([inc for inc in inconsistencies if inc.severity == "MEDIUM"])
         
-        total_indicators = formal_count + casual_count
-        
-        if total_indicators == 0:
-            return 0.5  # 中性
-        
-        return formal_count / total_indicators
+        return f"高優先度: {high_priority}件, 中優先度: {medium_priority}件の調整が推奨されます"
     
-    def _get_expected_formality_score(self, formality_level: str) -> float:
-        """期待される敬語レベルスコアを取得"""
-        level_scores = {
-            "カジュアル": 0.2,
-            "やや丁寧": 0.5,
-            "丁寧": 0.8,
-            "非常に丁寧": 0.9
-        }
-        
-        return level_scores.get(formality_level, 0.5)
+    def _update_tone_patterns(self, article: ArticleContent):
+        """トーンパターン更新"""
+        tone_key = f"{article.tone_manner.tone}_{article.tone_manner.formality}"
+        if tone_key not in self.tone_patterns:
+            self.tone_patterns[tone_key] = []
+        self.tone_patterns[tone_key].append(article.content)
     
-    def _suggest_sentence_improvement(self, sentence: str, brand_guidelines: Optional[Dict[str, Any]]) -> str:
-        """文章の改善案を提案"""
-        improved = sentence
+    def _update_expression_patterns(self, article: ArticleContent):
+        """表現パターン更新"""
+        sentences = self._split_sentences(article.content)
+        for sentence in sentences:
+            if len(sentence) > 10:  # 短すぎる文は除外
+                self.expression_patterns[article.tone_manner.tone].append(sentence)
+    
+    def _split_sentences(self, text: str) -> List[str]:
+        """文分割"""
+        sentences = re.split(r'[。！？]', text)
+        return [s.strip() for s in sentences if s.strip()]
+    
+    def _extract_common_expressions(self, text: str) -> List[str]:
+        """共通表現抽出"""
+        # 簡易的な共通表現抽出
+        patterns = [
+            r'です[ね。]',
+            r'ます[ね。]',
+            r'でしょう[ね。]',
+            r'ですよ[ね。]'
+        ]
         
-        # 基本的な改善パターン
-        if brand_guidelines:
-            dont_phrases = brand_guidelines.get("dont_phrases", [])
+        common_expressions = []
+        for pattern in patterns:
+            matches = re.findall(pattern, text)
+            common_expressions.extend(matches)
+        
+        return list(set(common_expressions))
+    
+    def _analyze_sentence_patterns(self, text: str) -> List[str]:
+        """文パターン分析"""
+        sentences = self._split_sentences(text)
+        
+        patterns = []
+        for sentence in sentences[:5]:  # 最初の5文をサンプル
+            if len(sentence) > 20:
+                pattern = sentence[:20] + "..."
+                patterns.append(pattern)
+        
+        return patterns
+    
+    def _extract_emotional_words(self, text: str) -> List[str]:
+        """感情語抽出"""
+        emotional_words = [
+            "美しい", "素晴らしい", "癒し", "心地よい", "温かい",
+            "優雅", "可憐", "魅力的", "感動", "喜び"
+        ]
+        
+        found_words = []
+        for word in emotional_words:
+            if word in text:
+                found_words.append(word)
+        
+        return found_words
+    
+    def _generate_formality_recommendations(self, content: str) -> List[ToneRecommendation]:
+        """敬語調整推奨事項生成"""
+        recommendations = []
+        
+        if "申し上げます" in content:
+            recommendations.append(ToneRecommendation(
+                recommendation_type=RecommendationType.FORMALITY_ADJUSTMENT,
+                priority="MEDIUM",
+                original_text="申し上げます",
+                suggested_text="します",
+                explanation="よりカジュアルな表現に調整",
+                confidence_score=0.8
+            ))
+        
+        return recommendations
+    
+    def _generate_tone_adjustment_recommendations(self, content: str) -> List[ToneRecommendation]:
+        """トーン調整推奨事項生成"""
+        recommendations = []
+        
+        if len(content) > 100:  # 簡易的なチェック
+            recommendations.append(ToneRecommendation(
+                recommendation_type=RecommendationType.TONE_ADJUSTMENT,
+                priority="MEDIUM",
+                original_text="全体的なトーン",
+                suggested_text="より親しみやすい表現",
+                explanation="過去記事との一貫性のため",
+                confidence_score=0.7
+            ))
+        
+        return recommendations
+    
+    def _generate_brand_alignment_recommendations(self, content: str) -> List[ToneRecommendation]:
+        """ブランド整合性推奨事項生成"""
+        recommendations = []
+        
+        if self.brand_voice_profile:
+            for avoid_word in self.brand_voice_profile.avoid_keywords:
+                if avoid_word in content:
+                    recommendations.append(ToneRecommendation(
+                        recommendation_type=RecommendationType.BRAND_ALIGNMENT,
+                        priority="HIGH",
+                        original_text=avoid_word,
+                        suggested_text="より適切な表現",
+                        explanation=f"ブランドガイドラインに従い「{avoid_word}」の使用を避ける",
+                        confidence_score=0.9
+                    ))
+        
+        return recommendations
+    
+    def _analyze_tone_evolution_trend(self, articles: List[ArticleContent]) -> Dict[str, Any]:
+        """トーン変化トレンド分析"""
+        if len(articles) < 2:
+            return {}
+        
+        sorted_articles = sorted(articles, key=lambda x: x.created_at)
+        
+        tone_changes = []
+        for i in range(1, len(sorted_articles)):
+            prev_tone = sorted_articles[i-1].tone_manner.tone
+            curr_tone = sorted_articles[i].tone_manner.tone
             
-            for dont_phrase in dont_phrases:
-                if dont_phrase in improved:
-                    # 簡単な置換ルール
-                    if dont_phrase == "絶対に":
-                        improved = improved.replace("絶対に", "とても")
-                    elif dont_phrase == "必ず":
-                        improved = improved.replace("必ず", "ぜひ")
-                    elif dont_phrase == "100%":
-                        improved = improved.replace("100%", "しっかりと")
+            if prev_tone != curr_tone:
+                tone_changes.append({
+                    "from": prev_tone,
+                    "to": curr_tone,
+                    "date": sorted_articles[i].created_at.isoformat()
+                })
         
-        return improved
+        return {
+            "total_changes": len(tone_changes),
+            "changes": tone_changes
+        }
+    
+    def _generate_overall_recommendations(self, analyses: List[ToneMannerAnalysis]) -> List[ToneRecommendation]:
+        """全体的な推奨事項生成"""
+        recommendations = []
+        
+        # 一貫性スコアが低い記事の数をチェック
+        low_consistency_count = len([a for a in analyses if a.consistency_score < 0.6])
+        
+        if low_consistency_count > len(analyses) * 0.3:  # 30%以上が低い一貫性
+            recommendations.append(ToneRecommendation(
+                recommendation_type=RecommendationType.TONE_ADJUSTMENT,
+                priority="HIGH",
+                original_text="全体的なトンマナ",
+                suggested_text="統一されたトンマナ",
+                explanation="サイト全体のトンマナ統一が必要",
+                confidence_score=0.9
+            ))
+        
+        return recommendations
+    
+    def _detect_style_changes(self, sorted_articles: List[ArticleContent]) -> List[Dict[str, Any]]:
+        """文体変化検出"""
+        changes = []
+        
+        for i in range(1, len(sorted_articles)):
+            prev_style = sorted_articles[i-1].tone_manner.writing_style
+            curr_style = sorted_articles[i].tone_manner.writing_style
+            
+            if prev_style != curr_style:
+                changes.append({
+                    "from_style": prev_style,
+                    "to_style": curr_style,
+                    "change_date": sorted_articles[i].created_at.isoformat()
+                })
+        
+        return changes
+    
+    def _initialize_formality_patterns(self) -> Dict[str, Dict[str, str]]:
+        """敬語パターン初期化"""
+        return {
+            "formal_to_casual": {
+                "申し上げます": "します",
+                "いたします": "します",
+                "でございます": "です",
+                "させていただきます": "します",
+                "恐れ入りますが": "すみませんが",
+            },
+            "casual_to_formal": {
+                "です": "でございます",
+                "します": "いたします",
+                "すみません": "申し訳ございません",
+            }
+        }
+    
+    def _initialize_tone_indicators(self) -> Dict[str, List[str]]:
+        """トーン指標初期化"""
+        return {
+            "friendly": ["ですね", "ですよ", "でしょう", "かもしれません"],
+            "formal": ["であります", "いたします", "でございます"],
+            "casual": ["だよ", "だね", "かな", "みたい"]
+        }
+    
+    def _initialize_expression_modernization(self) -> Dict[str, str]:
+        """表現モダン化マップ初期化"""
+        return {
+            "でございます": "です",
+            "かような": "このような",
+            "拝見いたします": "見ます",
+            "存じます": "思います",
+            "承知いたしました": "わかりました"
+        }
+
+
+# エクスポート
+__all__ = [
+    'ToneMannerEngine',
+    'ToneMannerAnalysis',
+    'ConsistencyReport',
+    'BrandVoiceProfile',
+    'ToneRecommendation',
+    'WritingStyle',
+    'FormalityLevel',
+    'ToneType',
+    'InconsistencyType',
+    'RecommendationType'
+]

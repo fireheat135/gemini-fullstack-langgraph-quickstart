@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 
-type ActiveView = 'research' | 'seo' | 'content' | 'api-keys';
+type ActiveView = 'research' | 'seo' | 'seo-research' | 'content' | 'api-keys';
 
 interface NavigationProps {
   activeView: ActiveView;
@@ -23,6 +23,12 @@ export function Navigation({ activeView, onViewChange }: NavigationProps) {
       label: 'SEO分析',
       icon: '📊',
       description: 'SEO最適化ダッシュボード'
+    },
+    {
+      id: 'seo-research' as ActiveView,
+      label: 'SEOリサーチ',
+      icon: '🧠',
+      description: 'AI駆動SEOリサーチ'
     },
     {
       id: 'content' as ActiveView,

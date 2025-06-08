@@ -26,6 +26,7 @@ class APIKeyCreate(APIKeyBase):
 
 class APIKeyUpdate(BaseModel):
     """Schema for updating API key information."""
+    api_key: Optional[str] = None
     name: Optional[str] = None
     model_name: Optional[str] = None
     max_tokens: Optional[int] = None
@@ -53,12 +54,12 @@ class APIKeyInDB(APIKeyBase):
         from_attributes = True
 
 
-class APIKey(APIKeyInDB):
+class APIKeyResponse(APIKeyInDB):
     """API key schema for API responses (without encrypted key)."""
     pass
 
 
-class APIKeyWithUsage(APIKey):
+class APIKeyWithUsage(APIKeyResponse):
     """API key schema with usage statistics."""
     usage_percentage_daily: Optional[float] = None
     usage_percentage_monthly: Optional[float] = None

@@ -28,6 +28,13 @@ dependencies = [
     "sqlalchemy>=2.0.28",
     "alembic>=1.13.1",
     "psycopg2-binary>=2.9.9",
+    # External APIs
+    "pytrends>=4.9.2",
+    "google-api-python-client>=2.120.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2.0",
+    "aiohttp>=3.9.0",
+    "pandas>=2.0.0",
     # Authentication & Security
     "python-jose[cryptography]>=3.3.0",
     "cryptography>=42.0.0",
@@ -123,7 +130,7 @@ show_error_codes = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q --strict-markers --cov=app --cov-report=html --cov-report=term-missing"
+addopts = "-ra -q --strict-markers"
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
